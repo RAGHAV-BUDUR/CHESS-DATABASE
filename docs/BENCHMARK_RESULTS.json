@@ -1,0 +1,51 @@
+{
+  "datasetSize": 8,
+  "totalPositionsAnalyzed": 468,
+  "executionTimeMs": 189,
+  "throughputPositionsPerSec": 2476,
+  "motifsDetected": {
+    "Minor Piece Sacrifice": 19,
+    "Queen Sacrifice": 17,
+    "Exchange Sacrifice": 4,
+    "Checkmate Attack": 3
+  },
+  "benchmarkResults": [
+    {
+      "Query": "Queen sacrifice leading to mating attack",
+      "TargetMotif": "Queen Sacrifice",
+      "RetrievedCount": 8,
+      "RelevantCount": 3,
+      "Precision@3": "100.0%",
+      "Recall@3": "100.0%",
+      "LatencyMs": "< 1ms (Indexed)"
+    },
+    {
+      "Query": "Checkmate attack",
+      "TargetMotif": "Checkmate Attack",
+      "RetrievedCount": 3,
+      "RelevantCount": 3,
+      "Precision@3": "100.0%",
+      "Recall@3": "100.0%",
+      "LatencyMs": "< 1ms (Indexed)"
+    },
+    {
+      "Query": "Minor piece sacrifice for attack",
+      "TargetMotif": "Minor Piece Sacrifice",
+      "RetrievedCount": 8,
+      "RelevantCount": 3,
+      "Precision@3": "100.0%",
+      "Recall@3": "100.0%",
+      "LatencyMs": "< 1ms (Indexed)"
+    },
+    {
+      "Query": "Exchange sacrifice on rook",
+      "TargetMotif": "Exchange Sacrifice",
+      "RetrievedCount": 3,
+      "RelevantCount": 2,
+      "Precision@3": "66.7%",
+      "Recall@3": "100.0%",
+      "LatencyMs": "< 1ms (Indexed)"
+    }
+  ],
+  "timestamp": "2026-10-28T18:08:49.705Z"
+}
