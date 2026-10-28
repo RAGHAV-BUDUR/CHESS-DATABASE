@@ -1,0 +1,44 @@
+{
+  "name": "chessbase",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ChessBase — A Chess Game Database & Move-Based Search Platform",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "db:init": "node scripts/db-init.js",
+    "db:seed": "node scripts/db-seed.js",
+    "db:benchmark": "node scripts/run-benchmarks.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "chess.js": "^1.0.0-beta.9",
+    "clsx": "^2.1.1",
+    "jose": "^5.9.6",
+    "lucide-react": "^0.453.0",
+    "next": "^14.2.15",
+    "pg": "^8.13.1",
+    "pgvector": "^0.2.0",
+    "react": "^18.3.1",
+    "react-chessboard": "^4.7.2",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.13.0",
+    "tailwind-merge": "^2.5.4"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.17.0",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
+  }
+}
+
