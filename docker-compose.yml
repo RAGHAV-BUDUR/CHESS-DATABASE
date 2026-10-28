@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: chessbase_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: chessbase
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./sql/functions.sql:/docker-entrypoint-initdb.d/02_functions.sql
+      - ./sql/triggers.sql:/docker-entrypoint-initdb.d/03_triggers.sql
+      - ./sql/views.sql:/docker-entrypoint-initdb.d/04_views.sql
+      - ./sql/indexes.sql:/docker-entrypoint-initdb.d/05_indexes.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d chessbase"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
