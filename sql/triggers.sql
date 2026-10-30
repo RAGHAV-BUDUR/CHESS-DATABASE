@@ -1,3 +1,4 @@
+
 -- ==============================================================================
 -- ChessBase PostgreSQL Triggers
 -- DBMS Experiential Learning - Level 3 Project

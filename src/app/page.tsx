@@ -92,10 +92,17 @@ export default async function HomePage() {
           {/* Quick Action Buttons */}
           <div className="pt-2 flex flex-wrap gap-4">
             <a
-              href="/games"
+              href="/database"
               className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-lg font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all shadow-md shadow-amber-500/20"
             >
-              <BookOpen className="w-4 h-4" />
+              <Database className="w-4 h-4" />
+              <span>Live Database Cockpit</span>
+            </a>
+            <a
+              href="/games"
+              className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-lg font-semibold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition-all"
+            >
+              <BookOpen className="w-4 h-4 text-amber-400" />
               <span>Explore Master Games</span>
             </a>
             <a

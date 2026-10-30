@@ -11,18 +11,59 @@ const bcrypt = require('bcryptjs');
 // Import compiled or transpile-free modules or implement robust helper
 const { Chess } = require('chess.js');
 
+// Load .env file
+try {
+  const envPath = path.resolve(__dirname, '../.env');
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    for (const line of envContent.split(/\r?\n/)) {
+      const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+      if (match && !process.env[match[1]]) {
+        let val = match[2] || '';
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        process.env[match[1]] = val;
+      }
+    }
+  }
+} catch (e) {
+  // Ignore
+}
+
 const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/chessbase';
 
 const MASTER_MOTIFS = [
+  // 1. Checks & Mates
   { name: 'Checkmate Attack', category: 'Attack', desc: 'Direct king mating net attack leading to mate or decisive advantage.', weight: 1.0 },
+  { name: 'Checkmate', category: 'Attack', desc: 'Direct king mating net delivering terminal checkmate.', weight: 1.0 },
+  { name: 'Check', category: 'Attack', desc: 'Direct check delivered by the moving piece against the opponent king.', weight: 0.6 },
+  { name: 'Discovered Check', category: 'Attack', desc: 'Check delivered by unmasking a line attack when a piece vacates the ray.', weight: 0.85 },
+  { name: 'Double Check', category: 'Attack', desc: 'Simultaneous check by two separate pieces, forcing king movement.', weight: 0.95 },
   { name: 'Check / Discovered Check', category: 'Attack', desc: 'Check delivered directly or unmasked by moving an obstructing piece.', weight: 0.8 },
+  { name: 'Checking Sacrifice', category: 'Sacrifice', desc: 'Deliberate sacrificial material offer that simultaneously delivers check.', weight: 0.95 },
+
+  // 2. Sacrifices
+  { name: 'Tactical Sacrifice', category: 'Sacrifice', desc: 'Material investment verified to recover material or achieve decisive mating attack.', weight: 1.0 },
+  { name: 'Candidate Sacrifice', category: 'Sacrifice', desc: 'Material offer with speculative attacking or tactical potential awaiting deep proof.', weight: 0.8 },
+  { name: 'Positional Sacrifice', category: 'Sacrifice', desc: 'Strategic material investment yielding compensation in pawn structure or activity.', weight: 0.85 },
   { name: 'Queen Sacrifice', category: 'Sacrifice', desc: 'Deliberate sacrifice of the queen for decisive attack or mate.', weight: 1.0 },
   { name: 'Exchange Sacrifice', category: 'Sacrifice', desc: 'Trading a rook for a bishop or knight to obtain positional advantage.', weight: 0.85 },
   { name: 'Minor Piece Sacrifice', category: 'Sacrifice', desc: 'Sacrificing knight or bishop to tear open king defences.', weight: 0.85 },
+  { name: 'Material Loss', category: 'Tactical Error', desc: 'Uncompensated material loss or tactical blunder.', weight: 0.5 },
+
+  // 3. Forks
+  { name: 'Fork Attack', category: 'Fork', desc: 'Single piece attacking two or more enemy targets simultaneously.', weight: 0.85 },
   { name: 'Knight Fork', category: 'Fork', desc: 'Knight attacking two or more valuable pieces simultaneously.', weight: 0.9 },
+  { name: 'Pawn Fork', category: 'Fork', desc: 'Pawn advancing to attack two enemy pieces simultaneously.', weight: 0.85 },
+
+  // 4. Pins & Skewers
   { name: 'Absolute Pin on King', category: 'Pin/Skewer', desc: 'Piece pinned to the king, legally immobilized.', weight: 0.8 },
   { name: 'Relative Pin on Queen', category: 'Pin/Skewer', desc: 'Piece pinned to the queen, moving loses heavy material.', weight: 0.75 },
   { name: 'Skewer Attack', category: 'Pin/Skewer', desc: 'Attack on valuable piece forcing it to step aside and expose another piece.', weight: 0.8 },
+  { name: 'Discovered Attack', category: 'Attack', desc: 'Unmasking an attack on a valuable piece by moving an obstructing piece.', weight: 0.8 },
+
+  // 5. Pawns & Endgames
   { name: 'Pawn Storm Attack', category: 'Attack', desc: 'Flank pawn avalanche against opponent castled king in opposite-side castling.', weight: 0.75 },
   { name: 'Promotion Threat', category: 'Endgame', desc: 'Advanced pawn on 7th/2nd rank threatening queen promotion.', weight: 0.7 },
   { name: 'Pawn Promotion', category: 'Endgame', desc: 'Successful pawn promotion to a higher piece.', weight: 0.85 }
@@ -210,8 +251,18 @@ async function seedDatabase() {
     }
     console.log('✓ Master tactical motifs seeded.');
 
-    // 3. Ingest Sample PGN Games
-    console.log('3. Ingesting Sample Historical Games...');
+    // 3. Optional: Ingest Sample PGN Games (Only if --with-samples is explicitly specified)
+    const withSamples = process.argv.includes('--with-samples');
+    if (!withSamples) {
+      console.log('3. Clean Database initialized (Zero hardcoded games seeded).');
+      console.log('   Users can now upload their own games via Admin/Import or interactive Analysis board.');
+      console.log('   (To seed historical sample games if desired: npm run db:seed -- --with-samples)');
+      client.release();
+      console.log('\nSeeding completed successfully!');
+      return;
+    }
+
+    console.log('3. Ingesting Sample Historical Games (--with-samples enabled)...');
     const pgnFile = path.join(__dirname, '..', 'data', 'sample-games.pgn');
     const rawPgn = fs.readFileSync(pgnFile, 'utf8');
 
@@ -230,6 +281,14 @@ async function seedDatabase() {
     if (curLines.length > 0) games.push(curLines.join('\n'));
 
     console.log(`Found ${games.length} games in sample PGN file.`);
+
+    let hasPgVector = false;
+    try {
+      const ext = await client.query("SELECT extname FROM pg_extension WHERE extname = 'vector'");
+      hasPgVector = ext.rows.length > 0;
+    } catch (e) {
+      hasPgVector = false;
+    }
 
     for (let idx = 0; idx < games.length; idx++) {
       const gPgn = games[idx];
@@ -282,10 +341,10 @@ async function seedDatabase() {
       // Opening
       const oRes = await client.query(`
         INSERT INTO openings (eco_code, opening_name, description)
-        VALUES ($1, $2, $2)
+        VALUES ($1, $2, $3)
         ON CONFLICT (eco_code, opening_name) DO UPDATE SET description = EXCLUDED.description
         RETURNING opening_id;
-      `, [eco, opName]);
+      `, [eco, opName, opName]);
       const openingId = oRes.rows[0].opening_id;
 
       // Game
@@ -338,11 +397,19 @@ async function seedDatabase() {
       const vec = generateEmbedding(summaryText);
       const vecStr = `[${vec.join(',')}]`;
 
-      await client.query(`
-        INSERT INTO game_embeddings (game_id, model_name, dimensions, source_text, embedding)
-        VALUES ($1, 'ChessBase-Semantic-384-Deterministic', 384, $2, $3::vector)
-        ON CONFLICT (game_id) DO UPDATE SET embedding = EXCLUDED.embedding, source_text = EXCLUDED.source_text;
-      `, [gameId, summaryText, vecStr]);
+      if (hasPgVector) {
+        await client.query(`
+          INSERT INTO game_embeddings (game_id, model_name, dimensions, source_text, embedding)
+          VALUES ($1, 'ChessBase-Semantic-384-Deterministic', 384, $2, $3::vector)
+          ON CONFLICT (game_id) DO UPDATE SET embedding = EXCLUDED.embedding, source_text = EXCLUDED.source_text;
+        `, [gameId, summaryText, vecStr]);
+      } else {
+        await client.query(`
+          INSERT INTO game_embeddings (game_id, model_name, dimensions, source_text, embedding)
+          VALUES ($1, 'ChessBase-Semantic-384-Deterministic', 384, $2, $3)
+          ON CONFLICT (game_id) DO UPDATE SET embedding = EXCLUDED.embedding, source_text = EXCLUDED.source_text;
+        `, [gameId, summaryText, vecStr]);
+      }
 
       await client.query('COMMIT');
       console.log(`✓ [Game ${idx+1}/${games.length}] Imported "${whiteName} vs ${blackName}" (${res}, ${moveCount} moves, ${motifs.length} motifs detected).`);

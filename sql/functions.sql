@@ -73,87 +73,94 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- 2. Stored Function: Hybrid Pattern & Structured Search
-CREATE OR REPLACE FUNCTION search_games_hybrid(
-    p_query_embedding vector(384) DEFAULT NULL,
-    p_motif_name VARCHAR(80) DEFAULT NULL,
-    p_opening_eco VARCHAR(3) DEFAULT NULL,
-    p_player_name VARCHAR(100) DEFAULT NULL,
-    p_result VARCHAR(7) DEFAULT NULL,
-    p_min_rating INT DEFAULT NULL,
-    p_max_rating INT DEFAULT NULL,
-    p_limit INT DEFAULT 20,
-    p_offset INT DEFAULT 0
-)
-RETURNS TABLE (
-    game_id INT,
-    game_date DATE,
-    result VARCHAR(7),
-    white_player VARCHAR(100),
-    white_rating INT,
-    black_player VARCHAR(100),
-    black_rating INT,
-    opening_name VARCHAR(150),
-    eco_code VARCHAR(3),
-    tournament_name VARCHAR(150),
-    detected_motif VARCHAR(80),
-    semantic_distance DOUBLE PRECISION,
-    combined_score DOUBLE PRECISION
-) AS $$
+DO $$
 BEGIN
-    RETURN QUERY
-    SELECT 
-        g.game_id,
-        g.game_date,
-        g.result,
-        wp.name AS white_player,
-        g.white_rating,
-        bp.name AS black_player,
-        g.black_rating,
-        o.opening_name,
-        o.eco_code,
-        t.name AS tournament_name,
-        tm.motif_name AS detected_motif,
-        CASE 
-            WHEN p_query_embedding IS NOT NULL AND ge.embedding IS NOT NULL 
-            THEN (ge.embedding <=> p_query_embedding)::DOUBLE PRECISION
-            ELSE 1.0::DOUBLE PRECISION 
-        END AS semantic_distance,
-        (
-            -- Normalized hybrid ranking scoring model:
-            -- 1. Semantic component (1 - distance)
-            CASE 
-                WHEN p_query_embedding IS NOT NULL AND ge.embedding IS NOT NULL 
-                THEN (1.0 - (ge.embedding <=> p_query_embedding)) * 0.5
-                ELSE 0.0 
-            END +
-            -- 2. Motif match bonus
-            CASE 
-                WHEN p_motif_name IS NOT NULL AND tm.motif_name = p_motif_name THEN 0.3
-                ELSE 0.0
-            END +
-            -- 3. High quality/rating game signal
-            COALESCE(LEAST(((g.white_rating + g.black_rating) / 2.0) / 3000.0 * 0.2, 0.2), 0.05)
-        )::DOUBLE PRECISION AS combined_score
-    FROM games g
-    JOIN players wp ON g.white_player_id = wp.player_id
-    JOIN players bp ON g.black_player_id = bp.player_id
-    LEFT JOIN openings o ON g.opening_id = o.opening_id
-    LEFT JOIN tournaments t ON g.tournament_id = t.tournament_id
-    LEFT JOIN game_embeddings ge ON g.game_id = ge.game_id
-    LEFT JOIN game_motifs gm ON g.game_id = gm.game_id
-    LEFT JOIN tactical_motifs tm ON gm.motif_id = tm.motif_id
-    WHERE 
-        (p_opening_eco IS NULL OR o.eco_code = p_opening_eco) AND
-        (p_result IS NULL OR g.result = p_result) AND
-        (p_player_name IS NULL OR wp.name ILIKE '%' || p_player_name || '%' OR bp.name ILIKE '%' || p_player_name || '%') AND
-        (p_min_rating IS NULL OR (g.white_rating >= p_min_rating AND g.black_rating >= p_min_rating)) AND
-        (p_max_rating IS NULL OR (g.white_rating <= p_max_rating AND g.black_rating <= p_max_rating)) AND
-        (p_motif_name IS NULL OR tm.motif_name = p_motif_name)
-    GROUP BY g.game_id, wp.name, bp.name, o.opening_name, o.eco_code, t.name, tm.motif_name, ge.embedding
-    ORDER BY combined_score DESC, g.game_date DESC NULLS LAST
-    LIMIT p_limit OFFSET p_offset;
-END;
-$$ LANGUAGE plpgsql STABLE;
+    IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'vector') THEN
+        EXECUTE $fn$
+        CREATE OR REPLACE FUNCTION search_games_hybrid(
+            p_query_embedding vector(384) DEFAULT NULL,
+            p_motif_name VARCHAR(80) DEFAULT NULL,
+            p_opening_eco VARCHAR(3) DEFAULT NULL,
+            p_player_name VARCHAR(100) DEFAULT NULL,
+            p_result VARCHAR(7) DEFAULT NULL,
+            p_min_rating INT DEFAULT NULL,
+            p_max_rating INT DEFAULT NULL,
+            p_limit INT DEFAULT 20,
+            p_offset INT DEFAULT 0
+        )
+        RETURNS TABLE (
+            game_id INT,
+            game_date DATE,
+            result VARCHAR(7),
+            white_player VARCHAR(100),
+            white_rating INT,
+            black_player VARCHAR(100),
+            black_rating INT,
+            opening_name VARCHAR(150),
+            eco_code VARCHAR(3),
+            tournament_name VARCHAR(150),
+            detected_motif VARCHAR(80),
+            semantic_distance DOUBLE PRECISION,
+            combined_score DOUBLE PRECISION
+        ) AS $body$
+        BEGIN
+            RETURN QUERY
+            SELECT 
+                g.game_id,
+                g.game_date,
+                g.result,
+                wp.name AS white_player,
+                g.white_rating,
+                bp.name AS black_player,
+                g.black_rating,
+                o.opening_name,
+                o.eco_code,
+                t.name AS tournament_name,
+                tm.motif_name AS detected_motif,
+                CASE 
+                    WHEN p_query_embedding IS NOT NULL AND ge.embedding IS NOT NULL 
+                    THEN (ge.embedding <=> p_query_embedding)::DOUBLE PRECISION
+                    ELSE 1.0::DOUBLE PRECISION 
+                END AS semantic_distance,
+                (
+                    -- Normalized hybrid ranking scoring model:
+                    -- 1. Semantic component (1 - distance)
+                    CASE 
+                        WHEN p_query_embedding IS NOT NULL AND ge.embedding IS NOT NULL 
+                        THEN (1.0 - (ge.embedding <=> p_query_embedding)) * 0.5
+                        ELSE 0.0 
+                    END +
+                    -- 2. Motif match bonus
+                    CASE 
+                        WHEN p_motif_name IS NOT NULL AND tm.motif_name = p_motif_name THEN 0.3
+                        ELSE 0.0
+                    END +
+                    -- 3. High quality/rating game signal
+                    COALESCE(LEAST(((g.white_rating + g.black_rating) / 2.0) / 3000.0 * 0.2, 0.2), 0.05)
+                )::DOUBLE PRECISION AS combined_score
+            FROM games g
+            JOIN players wp ON g.white_player_id = wp.player_id
+            JOIN players bp ON g.black_player_id = bp.player_id
+            LEFT JOIN openings o ON g.opening_id = o.opening_id
+            LEFT JOIN tournaments t ON g.tournament_id = t.tournament_id
+            LEFT JOIN game_embeddings ge ON g.game_id = ge.game_id
+            LEFT JOIN game_motifs gm ON g.game_id = gm.game_id
+            LEFT JOIN tactical_motifs tm ON gm.motif_id = tm.motif_id
+            WHERE 
+                (p_opening_eco IS NULL OR o.eco_code = p_opening_eco) AND
+                (p_result IS NULL OR g.result = p_result) AND
+                (p_player_name IS NULL OR wp.name ILIKE '%' || p_player_name || '%' OR bp.name ILIKE '%' || p_player_name || '%') AND
+                (p_min_rating IS NULL OR (g.white_rating >= p_min_rating AND g.black_rating >= p_min_rating)) AND
+                (p_max_rating IS NULL OR (g.white_rating <= p_max_rating AND g.black_rating <= p_max_rating)) AND
+                (p_motif_name IS NULL OR tm.motif_name = p_motif_name)
+            GROUP BY g.game_id, wp.name, bp.name, o.opening_name, o.eco_code, t.name, tm.motif_name, ge.embedding
+            ORDER BY combined_score DESC, g.game_date DESC NULLS LAST
+            LIMIT p_limit OFFSET p_offset;
+        END;
+        $body$ LANGUAGE plpgsql STABLE;
+        $fn$;
+    END IF;
+END $$;
 
 -- 3. Stored Procedure: Refresh All Player Aggregates in a Safe Transaction
 CREATE OR REPLACE PROCEDURE refresh_player_aggregates()

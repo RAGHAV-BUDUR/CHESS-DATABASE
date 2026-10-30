@@ -63,6 +63,50 @@ describe('PGN Parser & Dataset Ingestion', () => {
     expect(games.length).toBe(2);
   });
 
+  it('splits and parses Chessis PGNs with custom headers, evaluation comments and variations', () => {
+    const chessisPgn = `
+[App "Chessis"]
+[Date "2024.10.05"]
+[White "raghav"]
+[Black "rajath"]
+[ECO "C00"]
+[Opening "French Defense"]
+[Result "1-0"]
+[Event "puneet Rajkumar "]
+[ChessisTag "Other"]
+
+1. e4 e6 2. d4 {Opening: French} Qh4 3. Bd3 d5 4. e5 f6 {0.91 ➤ 6.46 ??BLUNDER, Best Move Was:}(Qd8 c3 c5 Nf3) 5. Nf3 1-0
+
+[App "Chessis"]
+[Date "2024.10.05"]
+[White "raghav"]
+[Black "dikshit"]
+[ECO "B12"]
+[Opening "Caro-Kann Defense"]
+[Result "0-1"]
+[Event "Puneet Rajkumar "]
+
+1. e4 c6 2. d4 d5 3. e5 Bf5 0-1
+    `;
+
+    const games = PGNParser.splitPgnGames(chessisPgn);
+    expect(games.length).toBe(2);
+
+    const game1 = PGNParser.parseSingleGame(games[0]);
+    expect(game1).not.toBeNull();
+    expect(game1?.whitePlayer).toBe('Raghav Budur');
+    expect(game1?.blackPlayer).toBe('rajath');
+    expect(game1?.ecoCode).toBe('C00');
+    expect(game1?.result).toBe('1-0');
+    expect(game1?.moves.length).toBe(9);
+
+    const game2 = PGNParser.parseSingleGame(games[1]);
+    expect(game2).not.toBeNull();
+    expect(game2?.whitePlayer).toBe('Raghav Budur');
+    expect(game2?.blackPlayer).toBe('dikshit');
+    expect(game2?.result).toBe('0-1');
+  });
+
   it('generates rich textual summary for semantic embedding ingestion', () => {
     const parsed = PGNParser.parseSingleGame(samplePgn);
     expect(parsed).not.toBeNull();

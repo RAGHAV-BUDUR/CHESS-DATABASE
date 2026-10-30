@@ -75,3 +75,4 @@ npm run test
 # 5. Verify TypeScript compilation
 npx tsc --noEmit
 ```
+

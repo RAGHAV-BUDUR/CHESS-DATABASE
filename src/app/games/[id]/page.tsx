@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -19,7 +20,11 @@ import {
   BookOpen, 
   Share2, 
   ArrowLeft,
-  Volume2
+  Volume2,
+  Trash2,
+  Edit3,
+  AlertCircle,
+  X
 } from 'lucide-react';
 import { Chess } from 'chess.js';
 
@@ -31,6 +36,7 @@ const Chessboard = dynamic(
 
 export default function GameExplorerPage({ params }: { params: { id: string } }) {
   const gameId = params.id;
+  const router = useRouter();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -42,8 +48,20 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   const [copied, setCopied] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
 
-  useEffect(() => {
-    setIsMounted(true);
+  // Edit Modal State
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editWhite, setEditWhite] = useState('');
+  const [editBlack, setEditBlack] = useState('');
+  const [editWhiteRating, setEditWhiteRating] = useState('');
+  const [editBlackRating, setEditBlackRating] = useState('');
+  const [editEvent, setEditEvent] = useState('');
+  const [editResult, setEditResult] = useState('1-0');
+  const [editOpening, setEditOpening] = useState('');
+  const [editEco, setEditEco] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const fetchGame = () => {
     fetch(`/api/games/${gameId}`)
       .then((res) => {
         if (!res.ok) throw new Error('Game not found or failed to load');
@@ -52,7 +70,6 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
       .then((json) => {
         if (json.success) {
           setData(json);
-          // Set initial FEN to start of game
           setFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
           setCurrentMoveIdx(-1);
         } else {
@@ -61,7 +78,78 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    setIsMounted(true);
+    fetchGame();
   }, [gameId]);
+
+  const handleDeleteGame = async () => {
+    if (!confirm(`Are you sure you want to permanently delete Game #${gameId}?`)) return;
+
+    try {
+      const res = await fetch(`/api/games/${gameId}`, { method: 'DELETE' });
+      const json = await res.json();
+      if (res.ok && json.success) {
+        alert(json.message || 'Game deleted.');
+        router.push('/games');
+      } else {
+        alert(json.error || 'Failed to delete game.');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Network error deleting game.');
+    }
+  };
+
+  const openEdit = () => {
+    if (!data?.game) return;
+    setEditWhite(data.game.white_player || '');
+    setEditBlack(data.game.black_player || '');
+    setEditWhiteRating(data.game.white_rating ? data.game.white_rating.toString() : '');
+    setEditBlackRating(data.game.black_rating ? data.game.black_rating.toString() : '');
+    setEditEvent(data.game.tournament_name || '');
+    setEditResult(data.game.result || '1-0');
+    setEditOpening(data.game.opening_name || '');
+    setEditEco(data.game.eco_code || '');
+    setEditError(null);
+    setShowEditModal(true);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEditSaving(true);
+    setEditError(null);
+
+    try {
+      const res = await fetch(`/api/games/${gameId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          whitePlayer: editWhite,
+          blackPlayer: editBlack,
+          whiteRating: editWhiteRating,
+          blackRating: editBlackRating,
+          eventName: editEvent,
+          result: editResult,
+          openingName: editOpening,
+          ecoCode: editEco,
+        }),
+      });
+
+      const json = await res.json();
+      if (res.ok && json.success) {
+        setShowEditModal(false);
+        fetchGame();
+      } else {
+        setEditError(json.error || 'Failed to update game.');
+      }
+    } catch (err: any) {
+      setEditError(err.message || 'Network error.');
+    } finally {
+      setEditSaving(false);
+    }
+  };
 
   // Navigate to specific move index
   const goToMove = (idx: number) => {
@@ -80,13 +168,18 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) return;
       if (e.key === 'ArrowLeft') {
+        e.preventDefault();
         goToMove(currentMoveIdx - 1);
       } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
         goToMove(currentMoveIdx + 1);
       } else if (e.key === 'Home') {
+        e.preventDefault();
         goToMove(-1);
       } else if (e.key === 'End') {
+        e.preventDefault();
         if (data?.moves) goToMove(data.moves.length - 1);
       }
     };
@@ -201,6 +294,22 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
 
         {/* Action Buttons */}
         <div className="flex items-center space-x-2">
+          <button
+            onClick={openEdit}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-amber-300 hover:text-amber-200 transition-colors border border-slate-700"
+            title="Edit Game Entry"
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+            <span>Edit</span>
+          </button>
+          <button
+            onClick={handleDeleteGame}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition-colors border border-rose-500/30"
+            title="Delete Game from Database"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Delete</span>
+          </button>
           <button
             onClick={copyPgn}
             className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors border border-slate-700"
@@ -444,6 +553,149 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
           )}
         </div>
       </div>
+
+      {/* Edit Game Modal */}
+      {showEditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-[#121820] border border-[#232f3e] rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-[#232f3e] pb-3">
+              <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                <Edit3 className="w-4 h-4 text-amber-400" />
+                <span>Modify Game Entry #{gameId}</span>
+              </h3>
+              <button
+                onClick={() => setShowEditModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {editError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-400 text-xs flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{editError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEdit} className="space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-300">White Player</label>
+                  <input
+                    type="text"
+                    value={editWhite}
+                    onChange={(e) => setEditWhite(e.target.value)}
+                    required
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-300">White Elo</label>
+                  <input
+                    type="number"
+                    value={editWhiteRating}
+                    onChange={(e) => setEditWhiteRating(e.target.value)}
+                    placeholder="e.g. 2700"
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-300">Black Player</label>
+                  <input
+                    type="text"
+                    value={editBlack}
+                    onChange={(e) => setEditBlack(e.target.value)}
+                    required
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-300">Black Elo</label>
+                  <input
+                    type="number"
+                    value={editBlackRating}
+                    onChange={(e) => setEditBlackRating(e.target.value)}
+                    placeholder="e.g. 2700"
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-300">Tournament / Event</label>
+                  <input
+                    type="text"
+                    value={editEvent}
+                    onChange={(e) => setEditEvent(e.target.value)}
+                    placeholder="e.g. FIDE Candidates"
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-300">Game Result</label>
+                  <select
+                    value={editResult}
+                    onChange={(e) => setEditResult(e.target.value)}
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="1-0">1-0 (White Wins)</option>
+                    <option value="0-1">0-1 (Black Wins)</option>
+                    <option value="1/2-1/2">½-½ (Draw)</option>
+                    <option value="*">* (In Progress / Unknown)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-300">Opening Name</label>
+                  <input
+                    type="text"
+                    value={editOpening}
+                    onChange={(e) => setEditOpening(e.target.value)}
+                    placeholder="e.g. Sicilian Defense"
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-300">ECO Code</label>
+                  <input
+                    type="text"
+                    value={editEco}
+                    onChange={(e) => setEditEco(e.target.value)}
+                    placeholder="e.g. B90"
+                    maxLength={3}
+                    className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 uppercase focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-3 border-t border-[#232f3e]">
+                <button
+                  type="button"
+                  onClick={() => setShowEditModal(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSaving}
+                  className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold transition-colors"
+                >
+                  {editSaving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

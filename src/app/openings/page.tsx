@@ -151,7 +151,7 @@ export default function OpeningsPage() {
 
                 <div className="pt-2 flex justify-end">
                   <a
-                    href={`/games?eco=${encodeURIComponent(op.eco_code)}`}
+                    href={`/games?eco=${encodeURIComponent(op.eco_code)}&opening=${encodeURIComponent(op.opening_name)}`}
                     className="inline-flex items-center space-x-1 text-xs font-medium text-amber-400 hover:text-amber-300"
                   >
                     <span>View Games</span>
@@ -166,3 +166,4 @@ export default function OpeningsPage() {
     </div>
   );
 }
+

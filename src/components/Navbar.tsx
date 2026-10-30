@@ -13,7 +13,9 @@ import {
   ShieldCheck, 
   Star, 
   LogIn, 
-  LogOut 
+  LogOut,
+  Swords,
+  Database
 } from 'lucide-react';
 
 export default function Navbar() {
@@ -38,7 +40,9 @@ export default function Navbar() {
   };
 
   const navLinks = [
+    { href: '/database', label: 'Database Cockpit', icon: Database },
     { href: '/games', label: 'Game Explorer', icon: BookOpen },
+    { href: '/analysis', label: 'Analysis & Input', icon: Swords },
     { href: '/search', label: 'Pattern Search', icon: Sparkles },
     { href: '/openings', label: 'Opening Tree', icon: Crown },
     { href: '/players', label: 'Players', icon: Users },

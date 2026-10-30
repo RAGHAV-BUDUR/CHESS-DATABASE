@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Sparkles, 
   Search, 
@@ -51,9 +51,10 @@ export default function PatternSearchPage() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
 
-  const handleSearch = async (e?: React.FormEvent) => {
+  const handleSearch = async (e?: React.FormEvent, customPrompt?: string) => {
     if (e) e.preventDefault();
-    if (!prompt && !motif && !openingEco && !playerName) return;
+    const queryText = customPrompt !== undefined ? customPrompt : prompt;
+    if (!queryText && !motif && !openingEco && !playerName) return;
 
     setLoading(true);
     setSearched(true);
@@ -63,13 +64,13 @@ export default function PatternSearchPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt,
+          prompt: queryText,
           motif: motif || undefined,
           openingEco: openingEco || undefined,
           playerName: playerName || undefined,
           result: result || undefined,
           minRating: minRating || undefined,
-          limit: 20
+          limit: 25
         }),
       });
 
@@ -87,6 +88,10 @@ export default function PatternSearchPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    handleSearch();
+  }, []);
 
   return (
     <div className="space-y-8">
@@ -150,6 +155,7 @@ export default function PatternSearchPage() {
               type="button"
               onClick={() => {
                 setPrompt(q);
+                handleSearch(undefined, q);
               }}
               className="px-2.5 py-1 rounded-full text-xs bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 hover:border-amber-500/40 transition-colors"
             >
@@ -326,3 +332,4 @@ export default function PatternSearchPage() {
     </div>
   );
 }
+

@@ -7,7 +7,14 @@
 -- 1. Enable Required PostgreSQL Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
-CREATE EXTENSION IF NOT EXISTS "vector";
+DO $$
+BEGIN
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "vector";
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'pgvector extension not installed in PostgreSQL instance, continuing with fallback...';
+    END;
+END $$;
 
 -- Drop existing tables in reverse dependency order if recreating
 DROP TABLE IF EXISTS user_favourites CASCADE;
@@ -134,20 +141,37 @@ CREATE TABLE game_motifs (
     move_san VARCHAR(15) NOT NULL,
     material_change INT DEFAULT 0,
     rationale TEXT NOT NULL,
-    confidence VARCHAR(20) DEFAULT 'RULE_BASED' CHECK (confidence IN ('EXACT', 'RULE_BASED', 'HEURISTIC')),
+    confidence VARCHAR(20) DEFAULT 'RULE_BASED' CHECK (confidence IN ('EXACT', 'RULE_BASED', 'HEURISTIC', 'GEOMETRIC', 'CANDIDATE', 'VERIFIED')),
+    evidence_level VARCHAR(20) DEFAULT 'CANDIDATE',
+    engine_eval VARCHAR(50) DEFAULT NULL,
     CONSTRAINT unq_game_motif_instance UNIQUE (game_id, motif_id, move_number, color)
 );
 
--- 11. Vector Embeddings Table (pgvector 384 dimensions for all-MiniLM-L6-v2 / local embeddings)
-CREATE TABLE game_embeddings (
-    embedding_id SERIAL PRIMARY KEY,
-    game_id INT NOT NULL UNIQUE REFERENCES games(game_id) ON DELETE CASCADE,
-    model_name VARCHAR(100) NOT NULL,
-    dimensions INT NOT NULL,
-    source_text TEXT NOT NULL,
-    embedding vector(384) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+-- 11. Vector Embeddings Table (pgvector 384 dimensions if vector extension is active, else TEXT)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'vector') THEN
+        CREATE TABLE IF NOT EXISTS game_embeddings (
+            embedding_id SERIAL PRIMARY KEY,
+            game_id INT NOT NULL UNIQUE REFERENCES games(game_id) ON DELETE CASCADE,
+            model_name VARCHAR(100) NOT NULL,
+            dimensions INT NOT NULL,
+            source_text TEXT NOT NULL,
+            embedding vector(384) NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    ELSE
+        CREATE TABLE IF NOT EXISTS game_embeddings (
+            embedding_id SERIAL PRIMARY KEY,
+            game_id INT NOT NULL UNIQUE REFERENCES games(game_id) ON DELETE CASCADE,
+            model_name VARCHAR(100) NOT NULL,
+            dimensions INT NOT NULL,
+            source_text TEXT NOT NULL,
+            embedding TEXT NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    END IF;
+END $$;
 
 -- 12. User Favourites Table
 CREATE TABLE user_favourites (

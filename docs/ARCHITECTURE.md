@@ -105,3 +105,4 @@ Chess data exhibits strict relational properties:
 1. **Unified ACID Transactions:** When an admin imports a PGN file, games, moves, tactical motifs, and vector embeddings are committed within a single database transaction (`withTransaction`). If an error occurs, the vector embedding and the game record roll back together, preventing dangling vector IDs.
 2. **Single Infrastructure Footprint:** No external vector SaaS API keys, zero cloud egress latency, and no synchronization drift between an external vector index and the primary database.
 3. **Single SQL Query Joins:** A single SQL query can join relational filters (`rating > 2600`) with vector similarity distance (`ORDER BY embedding <=> query_vector`).
+

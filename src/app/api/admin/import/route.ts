@@ -72,6 +72,12 @@ export async function POST(req: NextRequest) {
 
       try {
         await withTransaction(async (client) => {
+          let whitePlayer = (parsed.whitePlayer || 'Unknown White').trim().slice(0, 100);
+          let blackPlayer = (parsed.blackPlayer || 'Unknown Black').trim().slice(0, 100);
+          if (whitePlayer.toLowerCase() === blackPlayer.toLowerCase()) {
+            blackPlayer = `${blackPlayer} (Black)`.slice(0, 100);
+          }
+
           // A. Insert or get White Player
           const wRes = await client.query(`
             INSERT INTO players (name, fide_rating, country)
@@ -79,7 +85,7 @@ export async function POST(req: NextRequest) {
             ON CONFLICT (name) DO UPDATE SET 
               fide_rating = COALESCE(EXCLUDED.fide_rating, players.fide_rating)
             RETURNING player_id;
-          `, [parsed.whitePlayer, parsed.whiteRating || null]);
+          `, [whitePlayer, parsed.whiteRating || null]);
           const whiteId = wRes.rows[0].player_id;
 
           // B. Insert or get Black Player
@@ -89,27 +95,35 @@ export async function POST(req: NextRequest) {
             ON CONFLICT (name) DO UPDATE SET 
               fide_rating = COALESCE(EXCLUDED.fide_rating, players.fide_rating)
             RETURNING player_id;
-          `, [parsed.blackPlayer, parsed.blackRating || null]);
+          `, [blackPlayer, parsed.blackRating || null]);
           const blackId = bRes.rows[0].player_id;
 
           // C. Tournament
           let tournamentId = null;
-          if (parsed.event) {
-            const tRes = await client.query(`
-              INSERT INTO tournaments (name, location, start_date)
-              VALUES ($1, $2, $3)
-              RETURNING tournament_id;
-            `, [parsed.event, parsed.site || 'Unknown', parsed.date]);
-            tournamentId = tRes.rows[0].tournament_id;
+          if (parsed.event && parsed.event.trim().length > 0) {
+            const eventName = parsed.event.trim().slice(0, 150);
+            const existingTourn = await client.query(`SELECT tournament_id FROM tournaments WHERE name = $1 LIMIT 1;`, [eventName]);
+            if (existingTourn.rows.length > 0) {
+              tournamentId = existingTourn.rows[0].tournament_id;
+            } else {
+              const tRes = await client.query(`
+                INSERT INTO tournaments (name, location, start_date)
+                VALUES ($1, $2, $3)
+                RETURNING tournament_id;
+              `, [eventName, (parsed.site || 'Unknown').trim().slice(0, 100), parsed.date]);
+              tournamentId = tRes.rows[0].tournament_id;
+            }
           }
 
           // D. Opening
+          const oName = (parsed.openingName || 'Custom Opening').trim().slice(0, 150);
+          const ecoCode = (parsed.ecoCode || 'A00').trim().slice(0, 10);
           const oRes = await client.query(`
             INSERT INTO openings (eco_code, opening_name, description)
-            VALUES ($1, $2, $2)
+            VALUES ($1, $2, $3)
             ON CONFLICT (eco_code, opening_name) DO UPDATE SET description = EXCLUDED.description
             RETURNING opening_id;
-          `, [parsed.ecoCode, parsed.openingName]);
+          `, [ecoCode, oName, oName]);
           const openingId = oRes.rows[0].opening_id;
 
           // E. Insert Game
@@ -122,7 +136,7 @@ export async function POST(req: NextRequest) {
             RETURNING game_id;
           `, [
             whiteId, blackId, tournamentId, openingId,
-            parsed.result, parsed.date, parsed.round || '1', parsed.pgn,
+            parsed.result, parsed.date, (parsed.round || '1').slice(0, 20), parsed.pgn,
             parsed.moveCount, parsed.whiteRating || null, parsed.blackRating || null,
           ]);
           const gameId = gRes.rows[0].game_id;
@@ -152,13 +166,19 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          // H. Insert Vector Embedding if pgvector available
+          // H. Insert Vector Embedding
+          const vec = VectorEngine.generateEmbedding(parsed.searchableSummary);
+          const vecStr = VectorEngine.toPgVectorString(vec);
           if (hasPgVector) {
-            const vec = VectorEngine.generateEmbedding(parsed.searchableSummary);
-            const vecStr = VectorEngine.toPgVectorString(vec);
             await client.query(`
               INSERT INTO game_embeddings (game_id, model_name, dimensions, source_text, embedding)
               VALUES ($1, $2, $3, $4, $5::vector)
+              ON CONFLICT (game_id) DO UPDATE SET embedding = EXCLUDED.embedding, source_text = EXCLUDED.source_text;
+            `, [gameId, VectorEngine.MODEL_NAME, VectorEngine.DIMENSIONS, parsed.searchableSummary, vecStr]);
+          } else {
+            await client.query(`
+              INSERT INTO game_embeddings (game_id, model_name, dimensions, source_text, embedding)
+              VALUES ($1, $2, $3, $4, $5)
               ON CONFLICT (game_id) DO UPDATE SET embedding = EXCLUDED.embedding, source_text = EXCLUDED.source_text;
             `, [gameId, VectorEngine.MODEL_NAME, VectorEngine.DIMENSIONS, parsed.searchableSummary, vecStr]);
           }

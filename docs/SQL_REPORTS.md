@@ -224,3 +224,4 @@ JOIN openings o ON g.opening_id = o.opening_id
 WHERE g.result = '1-0' AND g.white_rating >= 2600
 ORDER BY g.game_date DESC;
 ```
+

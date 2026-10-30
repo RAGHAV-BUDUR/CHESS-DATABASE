@@ -6,6 +6,7 @@
 
 import { Chess } from 'chess.js';
 import { TacticalFingerprintEngine, DetectedMotif } from './tactical-fingerprint';
+import { ECOClassifier } from './eco-classifier';
 
 export interface ParsedGameMove {
   moveNumber: number;
@@ -42,21 +43,31 @@ export class PGNParser {
    */
   public static splitPgnGames(rawPgn: string): string[] {
     const rawGames: string[] = [];
-    const lines = rawPgn.split(/\r?\n/);
+    // Normalize newlines and clean non-printable control characters
+    const sanitizedInput = rawPgn.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+    const lines = sanitizedInput.split(/\r?\n/);
     let currentGameLines: string[] = [];
-    let insideGame = false;
+    let hasMoves = false;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
-      if (line.startsWith('[Event ') && currentGameLines.length > 0) {
-        // Look ahead to check if this is the start of a new game
-        const hasMoves = currentGameLines.some(l => !l.startsWith('[') && l.length > 0);
-        if (hasMoves) {
+      const isHeader = line.startsWith('[') && line.endsWith(']');
+
+      // If we encounter a PGN header tag after having already read moves,
+      // it marks the definitive start of the next game
+      if (isHeader && hasMoves) {
+        if (currentGameLines.length > 0) {
           rawGames.push(currentGameLines.join('\n'));
-          currentGameLines = [lines[i]];
-          continue;
         }
+        currentGameLines = [lines[i]];
+        hasMoves = false;
+        continue;
       }
+
+      if (!isHeader && line.length > 0 && !line.startsWith('%')) {
+        hasMoves = true;
+      }
+
       currentGameLines.push(lines[i]);
     }
 
@@ -72,11 +83,32 @@ export class PGNParser {
    */
   public static parseSingleGame(pgnText: string): ParsedGameRecord | null {
     const chess = new Chess();
+    let loaded = false;
+
+    // 1. Attempt standard PGN load
     try {
       chess.loadPgn(pgnText);
+      loaded = chess.history().length > 0;
     } catch {
-      return null;
+      loaded = false;
     }
+
+    // 2. Fallback: sanitize Chessis / engine comments { ... }, variations ( ... ), and NAGs $1
+    if (!loaded) {
+      try {
+        const cleaned = pgnText
+          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+          .replace(/\{[^}]*\}/g, ' ')
+          .replace(/\([^)]*\)/g, ' ')
+          .replace(/\$\d+/g, ' ');
+        chess.loadPgn(cleaned);
+        loaded = chess.history().length > 0;
+      } catch {
+        return null;
+      }
+    }
+
+    if (!loaded) return null;
 
     const headers = chess.header();
     // Supplement with regex in case non-standard headers were not parsed by chess.js
@@ -87,12 +119,28 @@ export class PGNParser {
         headers[match[1]] = match[2];
       }
     }
-    const whitePlayer = headers['White'] || 'Unknown White';
-    const blackPlayer = headers['Black'] || 'Unknown Black';
-    const event = headers['Event'] || 'Casual Game';
-    const site = headers['Site'] || 'Unknown Site';
-    const round = headers['Round'] || '1';
-    const rawResult = headers['Result'] || '*';
+    const rawWhite = headers['White'] ? headers['White'].trim() : '';
+    const rawBlack = headers['Black'] ? headers['Black'].trim() : '';
+
+    const normPlayer = (name: string, fallback: string) => {
+      if (!name || name === '?') return fallback;
+      if (/^raghav(\s+budur)?$/i.test(name) || name.toLowerCase().includes('raghav')) {
+        return 'Raghav Budur';
+      }
+      return name;
+    };
+
+    let whitePlayer = normPlayer(rawWhite, 'Unknown White').slice(0, 100);
+    let blackPlayer = normPlayer(rawBlack, 'Unknown Black').slice(0, 100);
+
+    if (whitePlayer.toLowerCase() === blackPlayer.toLowerCase()) {
+      blackPlayer = `${blackPlayer} (Black)`.slice(0, 100);
+    }
+
+    const event = (!headers['Event'] || headers['Event'].trim() === '?' ? 'Casual Game' : headers['Event'].trim()).slice(0, 200);
+    const site = (headers['Site'] || 'Unknown Site').trim().slice(0, 200);
+    const round = (headers['Round'] || '1').trim().slice(0, 20);
+    const rawResult = (headers['Result'] || '*').trim();
     const result = ['1-0', '0-1', '1/2-1/2'].includes(rawResult) 
       ? (rawResult as '1-0' | '0-1' | '1/2-1/2') 
       : '*';
@@ -112,28 +160,43 @@ export class PGNParser {
     if (parseInt(day, 10) > 28) day = '28';
     const date = `${year}-${month}-${day}`;
 
-    // Opening & ECO
-    const ecoCode = headers['ECO'] || 'A00';
-    const openingName = headers['Opening'] || 'Chess Game';
-
     // Extract move list and FEN positions
     const history = chess.history({ verbose: true });
     const replay = new Chess();
+    if (headers['FEN']) {
+      try {
+        replay.load(headers['FEN']);
+      } catch {
+        replay.reset();
+      }
+    }
     const moves: ParsedGameMove[] = [];
 
     for (let i = 0; i < history.length; i++) {
       const h = history[i];
-      replay.move(h);
+      try {
+        replay.move(h);
+      } catch {
+        // Fallback move attempt
+        try {
+          replay.move(h.san);
+        } catch {}
+      }
       moves.push({
         moveNumber: Math.floor(i / 2) + 1,
         color: h.color === 'w' ? 'white' : 'black',
-        san: h.san,
-        uci: `${h.from}${h.to}${h.promotion || ''}`,
+        san: h.san.slice(0, 20),
+        uci: `${h.from}${h.to}${h.promotion || ''}`.slice(0, 10),
         fenAfter: replay.fen(),
         isCheck: h.san.includes('+') || h.san.includes('#'),
         isCapture: h.captured !== undefined || h.san.includes('x')
       });
     }
+
+    // Opening & ECO deterministic classification
+    const openingClassification = ECOClassifier.classify(pgnText, history.map(m => m.san));
+    const ecoCode = openingClassification.ecoCode;
+    const openingName = openingClassification.openingName;
 
     const moveCount = Math.ceil(history.length / 2);
 

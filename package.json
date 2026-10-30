@@ -11,7 +11,10 @@
     "test": "vitest run",
     "db:init": "node scripts/db-init.js",
     "db:seed": "node scripts/db-seed.js",
-    "db:benchmark": "node scripts/run-benchmarks.js"
+    "db:clear-games": "node scripts/clear-games.js",
+    "db:reanalyze": "node scripts/reanalyze-games.js",
+    "db:benchmark": "node scripts/run-benchmarks.js",
+    "pgn:repair": "node scripts/repair-pgn.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -41,4 +44,3 @@
     "vitest": "^2.1.3"
   }
 }
-

@@ -50,3 +50,4 @@ describe('Security & Authentication Module', () => {
     expect(decoded).toBeNull();
   });
 });
+

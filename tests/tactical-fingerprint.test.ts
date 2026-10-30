@@ -94,3 +94,4 @@ describe('Tactical Fingerprint Engine (Deterministic Rule-Based Detection)', () 
     expect(run1.fingerprints.length).toBe(run2.fingerprints.length);
   });
 });
+

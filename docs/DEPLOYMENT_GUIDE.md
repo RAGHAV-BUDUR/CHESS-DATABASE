@@ -73,3 +73,4 @@ Once deployed to your public Vercel URL (e.g. `https://chessbase-dbms.vercel.app
 - [ ] **Player Dashboard:** Check player rating trajectory chart and career statistics.
 - [ ] **12 SQL Analytics Reports:** Verify query execution time and inspect the evaluator SQL proof panel.
 - [ ] **Authentication & Roles:** Log in as Admin (`admin@chessbase.local`) and verify non-admins cannot access `/api/admin/import`.
+

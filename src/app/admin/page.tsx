@@ -12,17 +12,40 @@ import {
   AlertTriangle,
   RefreshCw,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Trash2
 } from 'lucide-react';
 
 export default function AdminPage() {
   const [pgnText, setPgnText] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [importResult, setImportResult] = useState<any>(null);
   const [jobs, setJobs] = useState<any[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  const handleClearGames = async () => {
+    if (!confirm('Are you sure you want to purge all stored games, moves, tactical motifs, and embeddings from the database? Users and master motifs will be preserved.')) {
+      return;
+    }
+    setClearing(true);
+    try {
+      const res = await fetch('/api/admin/clear-games', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || 'All games cleared successfully.');
+        fetchJobs();
+      } else {
+        alert(data.error || 'Failed to clear games.');
+      }
+    } catch (err: any) {
+      alert('Error: ' + err.message);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const fetchJobs = async () => {
     try {
@@ -127,13 +150,24 @@ export default function AdminPage() {
           </p>
         </div>
 
-        <button
-          onClick={fetchJobs}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors border border-slate-700"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>Refresh Jobs</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={handleClearGames}
+            disabled={clearing}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-950/40 hover:bg-red-900/60 text-red-300 transition-colors border border-red-800/50"
+            title="Purge all games while preserving users and motifs"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>{clearing ? 'Clearing...' : 'Clear All Games'}</span>
+          </button>
+          <button
+            onClick={fetchJobs}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors border border-slate-700"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh Jobs</span>
+          </button>
+        </div>
       </div>
 
       {/* Import Form Grid */}
@@ -308,3 +342,4 @@ export default function AdminPage() {
     </div>
   );
 }
+

@@ -31,8 +31,13 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_source_fts ON game_embeddings USING GI
 
 -- 6. pgvector Vector Index (HNSW - Hierarchical Navigable Small World for Cosine Distance)
 -- Note: HNSW gives superior speed & recall for cosine similarity (<=>) compared to ivfflat
-CREATE INDEX IF NOT EXISTS idx_game_embeddings_vector_hnsw 
-ON game_embeddings 
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'vector') THEN
+        CREATE INDEX IF NOT EXISTS idx_game_embeddings_vector_hnsw 
+        ON game_embeddings 
+        USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64);
+    END IF;
+END $$;
 

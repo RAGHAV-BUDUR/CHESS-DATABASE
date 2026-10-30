@@ -3,11 +3,15 @@
  * DBMS Experiential Learning - Level 3 Project
  * Authors: Raghav Budur (PES1UG23AM225) & Prithviraj K (PES1UG24AM204)
  * 
- * 100% Deterministic Chess Rules & Board-State Analysis Engine.
- * NO LLM or probabilistic model used for tactical detection.
+ * 100% Deterministic Chess Rules & Legal Board-State Analysis Engine.
+ * NO notation-string guessing; evaluates actual piece attacks, rays, board geometry, and move lookahead.
  */
 
 import { Chess, Square, PieceSymbol, Color, Move } from 'chess.js';
+
+export type EvidenceLevel = 'GEOMETRIC' | 'CANDIDATE' | 'VERIFIED';
+export type ConfidenceLevel = 'EXACT' | 'RULE_BASED' | 'HEURISTIC' | 'VERIFIED' | 'CANDIDATE' | 'GEOMETRIC';
+export type SacrificeClassification = 'MATERIAL_LOSS' | 'CANDIDATE_SACRIFICE' | 'TACTICAL_SACRIFICE' | 'POSITIONAL_SACRIFICE' | 'UNCLASSIFIED';
 
 export interface PositionFingerprint {
   fen: string;
@@ -38,23 +42,49 @@ export interface PositionFingerprint {
 
 export interface DetectedMotif {
   motifName: string;
-  category: 'Sacrifice' | 'Attack' | 'Pin/Skewer' | 'Fork' | 'Structural' | 'Endgame';
+  category: 'Sacrifice' | 'Attack' | 'Pin/Skewer' | 'Fork' | 'Structural' | 'Endgame' | 'Tactical Error';
   moveNumber: number;
   color: 'white' | 'black';
   moveSan: string;
   fenPosition: string;
   materialChange: number;
   rationale: string;
-  confidence: 'EXACT' | 'RULE_BASED' | 'HEURISTIC';
+  confidence: ConfidenceLevel;
+  evidenceLevel?: EvidenceLevel;
+  engineEval?: string;
 }
 
 export interface GameFingerprintResult {
   fingerprints: PositionFingerprint[];
   detectedMotifs: DetectedMotif[];
-  summarySignature: Record<string, number>; // motifName -> count
+  summarySignature: Record<string, number>;
 }
 
-const PIECE_VALUES: Record<PieceSymbol, number> = {
+export interface MoveDiagnostic {
+  gameId?: number;
+  ply: number;
+  fenBefore: string;
+  fenAfter: string;
+  san: string;
+  uci: string;
+  sideToMove: 'white' | 'black';
+  materialBalanceBefore: { white: number; black: number; diff: number };
+  materialBalanceAfter: { white: number; black: number; diff: number };
+  materialDeltaForSide: number;
+  isCheck: boolean;
+  isCheckmate: boolean;
+  isDoubleCheck: boolean;
+  isDiscoveredCheck: boolean;
+  sacrificeClass?: SacrificeClassification;
+  attackedTargets: Array<{ square: string; piece: string; value: number }>;
+  motifs: DetectedMotif[];
+  evidenceSummary: string[];
+  searchDepth: number;
+  confidence: ConfidenceLevel;
+  evidenceLevel: EvidenceLevel;
+}
+
+export const PIECE_VALUES: Record<PieceSymbol, number> = {
   p: 1,
   n: 3,
   b: 3,
@@ -65,6 +95,115 @@ const PIECE_VALUES: Record<PieceSymbol, number> = {
 
 export class TacticalFingerprintEngine {
   /**
+   * Coordinate helpers: square ('e4') <-> [rank (0..7), file (0..7)]
+   */
+  public static squareToCoords(sq: Square): [number, number] {
+    const file = sq.charCodeAt(0) - 97;
+    const rank = 8 - parseInt(sq[1], 10);
+    return [rank, file];
+  }
+
+  public static coordsToSquare(rank: number, file: number): Square {
+    return `${String.fromCharCode(97 + file)}${8 - rank}` as Square;
+  }
+
+  /**
+   * Determine all pieces of a specific color that attack a target square on the board
+   */
+  public static getAttackers(
+    board: ({ square: Square; type: PieceSymbol; color: Color } | null)[][],
+    targetSq: Square,
+    byColor: Color
+  ): Array<{ square: Square; type: PieceSymbol; color: Color }> {
+    const attackers: Array<{ square: Square; type: PieceSymbol; color: Color }> = [];
+    const [tr, tc] = this.squareToCoords(targetSq);
+
+    // 1. Pawns attacking targetSq
+    const pawnRow = byColor === 'w' ? tr + 1 : tr - 1;
+    if (pawnRow >= 0 && pawnRow < 8) {
+      for (const pawnCol of [tc - 1, tc + 1]) {
+        if (pawnCol >= 0 && pawnCol < 8) {
+          const piece = board[pawnRow]?.[pawnCol];
+          if (piece && piece.color === byColor && piece.type === 'p') {
+            attackers.push(piece);
+          }
+        }
+      }
+    }
+
+    // 2. Knights attacking targetSq
+    const knightOffsets = [
+      [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+      [1, -2], [1, 2], [2, -1], [2, 1]
+    ];
+    for (const [dr, dc] of knightOffsets) {
+      const nr = tr + dr;
+      const nc = tc + dc;
+      if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+        const piece = board[nr]?.[nc];
+        if (piece && piece.color === byColor && piece.type === 'n') {
+          attackers.push(piece);
+        }
+      }
+    }
+
+    // 3. Kings attacking targetSq
+    const kingOffsets = [
+      [-1, -1], [-1, 0], [-1, 1],
+      [0, -1],           [0, 1],
+      [1, -1],  [1, 0],  [1, 1]
+    ];
+    for (const [dr, dc] of kingOffsets) {
+      const kr = tr + dr;
+      const kc = tc + dc;
+      if (kr >= 0 && kr < 8 && kc >= 0 && kc < 8) {
+        const piece = board[kr]?.[kc];
+        if (piece && piece.color === byColor && piece.type === 'k') {
+          attackers.push(piece);
+        }
+      }
+    }
+
+    // 4. Sliding pieces: Diagonals (Bishops and Queens)
+    const diagDirs = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+    for (const [dr, dc] of diagDirs) {
+      let r = tr + dr;
+      let c = tc + dc;
+      while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+        const piece = board[r]?.[c];
+        if (piece) {
+          if (piece.color === byColor && (piece.type === 'b' || piece.type === 'q')) {
+            attackers.push(piece);
+          }
+          break; // Ray blocked
+        }
+        r += dr;
+        c += dc;
+      }
+    }
+
+    // 5. Sliding pieces: Orthogonals (Rooks and Queens)
+    const orthoDirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    for (const [dr, dc] of orthoDirs) {
+      let r = tr + dr;
+      let c = tc + dc;
+      while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+        const piece = board[r]?.[c];
+        if (piece) {
+          if (piece.color === byColor && (piece.type === 'r' || piece.type === 'q')) {
+            attackers.push(piece);
+          }
+          break; // Ray blocked
+        }
+        r += dr;
+        c += dc;
+      }
+    }
+
+    return attackers;
+  }
+
+  /**
    * Calculate static deterministic position fingerprint
    */
   public static analyzePosition(chess: Chess): PositionFingerprint {
@@ -74,8 +213,8 @@ export class TacticalFingerprintEngine {
 
     let whiteMaterial = 0;
     let blackMaterial = 0;
-    let whitePawns: Square[] = [];
-    let blackPawns: Square[] = [];
+    const whitePawns: Square[] = [];
+    const blackPawns: Square[] = [];
     let whiteKingSq: Square = 'e1';
     let blackKingSq: Square = 'e8';
 
@@ -97,7 +236,6 @@ export class TacticalFingerprintEngine {
       }
     }
 
-    // King castling flags from FEN
     const fenParts = fen.split(' ');
     const castlingStr = fenParts[2] || '-';
     const castlingRights = {
@@ -107,8 +245,6 @@ export class TacticalFingerprintEngine {
       blackQueenside: castlingStr.includes('q')
     };
 
-    // King safety & Pawn shield
-    // White king file & rank
     const wKingFile = whiteKingSq.charCodeAt(0) - 97;
     const wKingRank = parseInt(whiteKingSq[1], 10);
     let whiteShield = 0;
@@ -131,14 +267,12 @@ export class TacticalFingerprintEngine {
       }
     }
 
-    // Opposite side castling: one king on c/b/a-file (queenside) and other on g/h-file (kingside)
     const whiteCastledQueenside = wKingFile <= 2;
     const whiteCastledKingside = wKingFile >= 5;
     const blackCastledQueenside = bKingFile <= 2;
     const blackCastledKingside = bKingFile >= 5;
     const oppositeSideCastling = (whiteCastledQueenside && blackCastledKingside) || (whiteCastledKingside && blackCastledQueenside);
 
-    // Pawn storms: white pawns advanced on files f, g, h past rank 4 while black king is kingside
     let wKingsideStorm = false;
     let wQueensideStorm = false;
     for (const p of whitePawns) {
@@ -176,10 +310,26 @@ export class TacticalFingerprintEngine {
    */
   public static analyzeGame(pgn: string): GameFingerprintResult {
     const game = new Chess();
+    let loaded = false;
     try {
       game.loadPgn(pgn);
+      loaded = true;
     } catch {
-      return { fingerprints: [], detectedMotifs: [], summarySignature: {} };
+      loaded = false;
+    }
+
+    if (!loaded) {
+      try {
+        const sanitized = pgn
+          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+          .replace(/\{[^}]*\}/g, ' ')
+          .replace(/\([^)]*\)/g, ' ')
+          .replace(/\$\d+/g, ' ');
+        game.loadPgn(sanitized);
+        loaded = true;
+      } catch {
+        return { fingerprints: [], detectedMotifs: [], summarySignature: {} };
+      }
     }
 
     const history = game.history({ verbose: true });
@@ -188,28 +338,33 @@ export class TacticalFingerprintEngine {
     const detectedMotifs: DetectedMotif[] = [];
     const summarySignature: Record<string, number> = {};
 
-    let prevMaterial = { white: 39, black: 39 };
-
     for (let i = 0; i < history.length; i++) {
       const move = history[i];
       const moveColor = move.color === 'w' ? 'white' : 'black';
       const moveNumber = Math.floor(i / 2) + 1;
 
-      // Position before move
       const preMoveFen = replay.fen();
       const preMovePosition = this.analyzePosition(replay);
 
-      // Execute move
       replay.move(move);
       const postMoveFen = replay.fen();
       const postMovePosition = this.analyzePosition(replay);
       fingerprints.push(postMovePosition);
 
-      // Lookahead to next move for sacrifice validation
-      const nextMove = i + 1 < history.length ? history[i + 1] : null;
+      // Remaining future moves in game for historical tactical validation
+      const futureMoves = history.slice(i + 1, i + 5);
 
-      // Detect Motifs for this move
-      const motifs = this.detectMoveMotifs(replay, move, moveNumber, moveColor, preMovePosition, postMovePosition, preMoveFen, postMoveFen, nextMove);
+      const motifs = this.detectMoveMotifs(
+        replay,
+        move,
+        moveNumber,
+        moveColor,
+        preMovePosition,
+        postMovePosition,
+        preMoveFen,
+        postMoveFen,
+        futureMoves
+      );
 
       for (const m of motifs) {
         detectedMotifs.push(m);
@@ -221,10 +376,10 @@ export class TacticalFingerprintEngine {
   }
 
   /**
-   * Rule-based detector for individual move
+   * Core Rule-Based Tactical Motif Classifier for an Individual Move
    */
-  private static detectMoveMotifs(
-    game: Chess,
+  public static detectMoveMotifs(
+    postGame: Chess,
     move: Move,
     moveNumber: number,
     moveColor: 'white' | 'black',
@@ -232,13 +387,30 @@ export class TacticalFingerprintEngine {
     postPos: PositionFingerprint,
     preFen: string,
     postFen: string,
-    nextMove?: Move | null
+    futureMoves?: Move[]
   ): DetectedMotif[] {
     const motifs: DetectedMotif[] = [];
-    const oppColor = moveColor === 'white' ? 'black' : 'white';
+    const sideColor: Color = move.color;
+    const oppColor: Color = sideColor === 'w' ? 'b' : 'w';
+    const board = postGame.board();
 
-    // 1. Checkmate
-    if (game.isCheckmate()) {
+    // =========================================================================
+    // 1. LEGAL CHECK & CHECKMATE CLASSIFICATION
+    // =========================================================================
+    if (postGame.isCheckmate()) {
+      motifs.push({
+        motifName: 'Checkmate',
+        category: 'Attack',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: 0,
+        rationale: `${moveColor.toUpperCase()} executed terminal checkmate on move ${moveNumber} with ${move.san}.`,
+        confidence: 'EXACT',
+        evidenceLevel: 'VERIFIED'
+      });
+      // Backward compatibility alias
       motifs.push({
         motifName: 'Checkmate Attack',
         category: 'Attack',
@@ -247,152 +419,134 @@ export class TacticalFingerprintEngine {
         moveSan: move.san,
         fenPosition: postFen,
         materialChange: 0,
-        rationale: `${moveColor.toUpperCase()} executed terminal checkmate on move ${moveNumber} with ${move.san}.`,
-        confidence: 'EXACT'
+        rationale: `${moveColor.toUpperCase()} delivered checkmate.`,
+        confidence: 'EXACT',
+        evidenceLevel: 'VERIFIED'
       });
-    }
+    } else if (postGame.inCheck()) {
+      // Find opponent king position
+      let oppKingSq: Square = 'e8';
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const p = board[r][c];
+          if (p && p.color === oppColor && p.type === 'k') {
+            oppKingSq = p.square;
+            break;
+          }
+        }
+      }
 
-    // 2. Discovered Check / Double Check
-    if (game.inCheck() && !game.isCheckmate()) {
-      // Check if the moving piece is giving the check or if another sliding piece unmasked it
-      const movingPieceType = move.piece;
-      // If moving piece doesn't directly hit king, it's discovered check
-      if (move.san.includes('#')) {
-        // Handled in checkmate
-      } else if (move.san.includes('+')) {
-        // Check for double check (marked by ++ in some notations or multiple checkers)
+      const checkers = this.getAttackers(board, oppKingSq, sideColor);
+
+      if (checkers.length >= 2) {
+        // DOUBLE CHECK
         motifs.push({
-          motifName: 'Check / Discovered Check',
+          motifName: 'Double Check',
           category: 'Attack',
           moveNumber,
           color: moveColor,
           moveSan: move.san,
           fenPosition: postFen,
           materialChange: 0,
-          rationale: `${moveColor.toUpperCase()} delivered check with ${move.san}.`,
-          confidence: 'EXACT'
+          rationale: `${moveColor.toUpperCase()} delivered Double Check with ${move.san} (${checkers.map(c => c.type.toUpperCase() + ' on ' + c.square).join(' and ')}).`,
+          confidence: 'EXACT',
+          evidenceLevel: 'VERIFIED'
         });
-      }
-    }
-
-    // 3. Material Sacrifices
-    // Queen Sacrifice: Player moves Queen, and on the immediate next move the Queen is captured
-    if (move.piece === 'q') {
-      const queenCapturedNext = nextMove && (nextMove.captured === 'q' || nextMove.to === move.to);
-      if (queenCapturedNext) {
-        const materialGained = move.captured ? PIECE_VALUES[move.captured] : 0;
-        if (materialGained < 9) {
+      } else if (checkers.length === 1) {
+        const soleChecker = checkers[0];
+        if (soleChecker.square === move.to) {
+          // DIRECT CHECK
           motifs.push({
-            motifName: 'Queen Sacrifice',
-            category: 'Sacrifice',
+            motifName: 'Check',
+            category: 'Attack',
             moveNumber,
             color: moveColor,
             moveSan: move.san,
             fenPosition: postFen,
-            materialChange: materialGained - 9,
-            rationale: `${moveColor.toUpperCase()} sacrificed the Queen with ${move.san} for initiative (material change: ${materialGained - 9}).`,
-            confidence: 'EXACT'
+            materialChange: 0,
+            rationale: `${moveColor.toUpperCase()} delivered direct check with ${move.san}.`,
+            confidence: 'EXACT',
+            evidenceLevel: 'VERIFIED'
+          });
+        } else {
+          // DISCOVERED CHECK: moving piece is NOT the checker; unmasked a sliding piece
+          motifs.push({
+            motifName: 'Discovered Check',
+            category: 'Attack',
+            moveNumber,
+            color: moveColor,
+            moveSan: move.san,
+            fenPosition: postFen,
+            materialChange: 0,
+            rationale: `${moveColor.toUpperCase()} played ${move.san}, unmasking Discovered Check from ${soleChecker.type.toUpperCase()} on ${soleChecker.square}.`,
+            confidence: 'EXACT',
+            evidenceLevel: 'VERIFIED'
           });
         }
       }
-    }
 
-    // Rook Exchange Sacrifice (Rook given for Knight or Bishop)
-    if (move.piece === 'r' && move.captured && (move.captured === 'n' || move.captured === 'b')) {
+      // Backward compatibility alias
       motifs.push({
-        motifName: 'Exchange Sacrifice',
-        category: 'Sacrifice',
+        motifName: 'Check / Discovered Check',
+        category: 'Attack',
         moveNumber,
         color: moveColor,
         moveSan: move.san,
         fenPosition: postFen,
-        materialChange: -2,
-        rationale: `${moveColor.toUpperCase()} traded Rook (5) for Minor Piece (${move.captured.toUpperCase()}=3) to seize initiative.`,
-        confidence: 'EXACT'
+        materialChange: 0,
+        rationale: `${moveColor.toUpperCase()} delivered check with ${move.san}.`,
+        confidence: 'EXACT',
+        evidenceLevel: 'VERIFIED'
       });
     }
 
-    // Minor Piece Sacrifice (Bishop/Knight for pawns or attack)
-    if (move.piece === 'b' || move.piece === 'n') {
-      const pieceCapturedNext = nextMove && (nextMove.captured === move.piece || nextMove.to === move.to);
-      if (pieceCapturedNext) {
-        const gained = move.captured ? PIECE_VALUES[move.captured] : 0;
-        if (gained < 3) {
-          motifs.push({
-            motifName: 'Minor Piece Sacrifice',
-            category: 'Sacrifice',
-            moveNumber,
-            color: moveColor,
-            moveSan: move.san,
-            fenPosition: postFen,
-            materialChange: gained - 3,
-            rationale: `${moveColor.toUpperCase()} sacrificed ${move.piece.toUpperCase()} on ${move.to} with ${move.san} to break defenses (material change: ${gained - 3}).`,
-            confidence: 'EXACT'
-          });
-        }
-      } else if (move.captured === 'p') {
-        motifs.push({
-          motifName: 'Minor Piece Sacrifice',
-          category: 'Sacrifice',
-          moveNumber,
-          color: moveColor,
-          moveSan: move.san,
-          fenPosition: postFen,
-          materialChange: -2,
-          rationale: `${moveColor.toUpperCase()} sacrificed ${move.piece.toUpperCase()} on ${move.to} for pawn to break defenses.`,
-          confidence: 'RULE_BASED'
-        });
+    // =========================================================================
+    // 2. DISCOVERED ATTACK (Non-Check)
+    // =========================================================================
+    if (!postGame.inCheck()) {
+      const discoveredAttack = this.detectDiscoveredAttack(preFen, postFen, move, moveNumber, moveColor);
+      if (discoveredAttack) {
+        motifs.push(discoveredAttack);
       }
     }
 
-    // 4. Knight Fork / Multi-target Fork
-    if (move.piece === 'n') {
-      const attackedSquares = this.getAttackedSquaresByKnight(move.to);
-      const highValueTargets: string[] = [];
-      const board = game.board();
-
-      for (const sq of attackedSquares) {
-        const file = sq.charCodeAt(0) - 97;
-        const rank = 8 - parseInt(sq[1], 10);
-        const targetPiece = board[rank]?.[file];
-        if (targetPiece && targetPiece.color !== move.color && ['k', 'q', 'r'].includes(targetPiece.type)) {
-          highValueTargets.push(`${targetPiece.type.toUpperCase()} on ${sq}`);
-        }
-      }
-
-      if (highValueTargets.length >= 2) {
-        motifs.push({
-          motifName: 'Knight Fork',
-          category: 'Fork',
-          moveNumber,
-          color: moveColor,
-          moveSan: move.san,
-          fenPosition: postFen,
-          materialChange: 0,
-          rationale: `Knight on ${move.to} forks ${highValueTargets.join(' and ')}.`,
-          confidence: 'EXACT'
-        });
-      }
+    // =========================================================================
+    // 3. PINS AND SKEWERS
+    // =========================================================================
+    const pinOrSkewerMotifs = this.detectPinsAndSkewers(postGame, move, moveNumber, moveColor, postFen);
+    for (const p of pinOrSkewerMotifs) {
+      motifs.push(p);
     }
 
-    // 5. Pawn Storm & Opposite-Side Castling Attack
-    if (postPos.kingSafety.oppositeSideCastling) {
-      if (move.piece === 'p' && (postPos.pawnStructure.isPawnStormKingside || postPos.pawnStructure.isPawnStormQueenside)) {
-        motifs.push({
-          motifName: 'Pawn Storm Attack',
-          category: 'Attack',
-          moveNumber,
-          color: moveColor,
-          moveSan: move.san,
-          fenPosition: postFen,
-          materialChange: 0,
-          rationale: `Opposite-side castling pawn advance: ${moveColor.toUpperCase()} launches pawn storm with ${move.san}.`,
-          confidence: 'RULE_BASED'
-        });
-      }
+    // =========================================================================
+    // 4. FORKS (Pawns, Knights, Pieces)
+    // =========================================================================
+    const forkMotifs = this.detectForks(postGame, move, moveNumber, moveColor, postFen);
+    for (const f of forkMotifs) {
+      motifs.push(f);
     }
 
-    // 6. Pawn Promotion / Promotion Threat
+    // =========================================================================
+    // 5. SACRIFICE CLASSIFICATION & VALIDATION
+    // =========================================================================
+    const sacrificeMotifs = this.classifySacrifice(
+      preFen,
+      postFen,
+      postGame,
+      move,
+      moveNumber,
+      moveColor,
+      prePos,
+      postPos,
+      futureMoves
+    );
+    for (const s of sacrificeMotifs) {
+      motifs.push(s);
+    }
+
+    // =========================================================================
+    // 6. PAWN PROMOTION & PROMOTION THREAT
+    // =========================================================================
     if (move.promotion) {
       motifs.push({
         motifName: 'Pawn Promotion',
@@ -403,7 +557,8 @@ export class TacticalFingerprintEngine {
         fenPosition: postFen,
         materialChange: 8,
         rationale: `Pawn promoted to ${move.promotion.toUpperCase()} on ${move.to}.`,
-        confidence: 'EXACT'
+        confidence: 'EXACT',
+        evidenceLevel: 'VERIFIED'
       });
     } else if (move.piece === 'p' && ((moveColor === 'white' && move.to[1] === '7') || (moveColor === 'black' && move.to[1] === '2'))) {
       motifs.push({
@@ -414,111 +569,127 @@ export class TacticalFingerprintEngine {
         moveSan: move.san,
         fenPosition: postFen,
         materialChange: 0,
-        rationale: `Pawn reached penultimate rank (${move.to}), creating immediate promotion threat.`,
-        confidence: 'EXACT'
+        rationale: `Pawn advanced to ${move.to}, creating an immediate promotion threat.`,
+        confidence: 'EXACT',
+        evidenceLevel: 'CANDIDATE'
       });
     }
 
-    // 7. Pin / Skewer Detection (Bishop or Rook alignment with King/Queen)
-    if (['b', 'r', 'q'].includes(move.piece)) {
-      const pinMotif = this.detectPinOrSkewer(game, move, moveNumber, moveColor, postFen);
-      if (pinMotif) motifs.push(pinMotif);
+    // =========================================================================
+    // 7. PAWN STORM ATTACK
+    // =========================================================================
+    if (postPos.kingSafety.oppositeSideCastling && move.piece === 'p') {
+      if (postPos.pawnStructure.isPawnStormKingside || postPos.pawnStructure.isPawnStormQueenside) {
+        motifs.push({
+          motifName: 'Pawn Storm Attack',
+          category: 'Attack',
+          moveNumber,
+          color: moveColor,
+          moveSan: move.san,
+          fenPosition: postFen,
+          materialChange: 0,
+          rationale: `Opposite-side castling attack: ${moveColor.toUpperCase()} launches pawn storm with ${move.san}.`,
+          confidence: 'RULE_BASED',
+          evidenceLevel: 'CANDIDATE'
+        });
+      }
     }
 
     return motifs;
   }
 
   /**
-   * Helper: Calculate squares attacked by knight at square
+   * Discovered Attack Detection: Moving a piece unblocks a friendly sliding piece's ray
+   * against an opponent valuable piece (Queen, Rook, or undefended minor piece).
    */
-  private static getAttackedSquaresByKnight(sq: Square): Square[] {
-    const file = sq.charCodeAt(0) - 97;
-    const rank = parseInt(sq[1], 10);
-    const knightDeltas = [
-      [1, 2], [2, 1], [-1, 2], [-2, 1],
-      [1, -2], [2, -1], [-1, -2], [-2, -1]
-    ];
-    const squares: Square[] = [];
-    for (const [df, dr] of knightDeltas) {
-      const nf = file + df;
-      const nr = rank + dr;
-      if (nf >= 0 && nf < 8 && nr >= 1 && nr <= 8) {
-        squares.push(`${String.fromCharCode(97 + nf)}${nr}` as Square);
-      }
-    }
-    return squares;
-  }
-
-  /**
-   * Helper: Detect Pin or Skewer along ray
-   */
-  private static detectPinOrSkewer(
-    game: Chess,
+  private static detectDiscoveredAttack(
+    preFen: string,
+    postFen: string,
     move: Move,
     moveNumber: number,
-    moveColor: 'white' | 'black',
-    postFen: string
+    moveColor: 'white' | 'black'
   ): DetectedMotif | null {
-    const board = game.board();
-    const moveSqFile = move.to.charCodeAt(0) - 97;
-    const moveSqRank = 8 - parseInt(move.to[1], 10);
+    const preChess = new Chess(preFen);
+    const postChess = new Chess(postFen);
+    const preBoard = preChess.board();
+    const postBoard = postChess.board();
+    const sideColor: Color = move.color;
+    const oppColor: Color = sideColor === 'w' ? 'b' : 'w';
 
-    // Directions for bishop/queen (diagonals) and rook/queen (orthogonals)
-    const deltas = [];
-    if (['b', 'q'].includes(move.piece)) {
-      deltas.push([1, 1], [1, -1], [-1, 1], [-1, -1]);
-    }
-    if (['r', 'q'].includes(move.piece)) {
-      deltas.push([1, 0], [-1, 0], [0, 1], [0, -1]);
-    }
+    const [vacatedR, vacatedC] = this.squareToCoords(move.from);
 
-    for (const [dr, dc] of deltas) {
-      let r = moveSqRank + dr;
-      let c = moveSqFile + dc;
-      let firstPiece = null;
-      let secondPiece = null;
+    // Examine the 8 ray directions through vacated square
+    const allDirs = [
+      [-1, -1], [-1, 1], [1, -1], [1, 1],
+      [-1, 0], [1, 0], [0, -1], [0, 1]
+    ];
 
-      while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-        const p = board[r][c];
+    for (const [dr, dc] of allDirs) {
+      const isDiag = Math.abs(dr) === 1 && Math.abs(dc) === 1;
+
+      // 1. Look backwards from vacated square for friendly sliding piece
+      let br = vacatedR - dr;
+      let bc = vacatedC - dc;
+      let friendlySlider: { square: Square; type: PieceSymbol } | null = null;
+
+      while (br >= 0 && br < 8 && bc >= 0 && bc < 8) {
+        const p = postBoard[br]?.[bc];
         if (p) {
-          if (!firstPiece) {
-            firstPiece = p;
-          } else if (!secondPiece) {
-            secondPiece = p;
-            break;
+          if (p.color === sideColor) {
+            if (isDiag && (p.type === 'b' || p.type === 'q')) {
+              friendlySlider = p;
+            } else if (!isDiag && (p.type === 'r' || p.type === 'q')) {
+              friendlySlider = p;
+            }
           }
+          break; // First piece in direction
         }
-        r += dr;
-        c += dc;
+        br -= dr;
+        bc -= dc;
       }
 
-      if (firstPiece && secondPiece && firstPiece.color !== move.color && secondPiece.color !== move.color) {
-        // Pin: First piece is lesser value (e.g. Knight/Bishop/Rook) shielding King or Queen
-        if (secondPiece.type === 'k' || (secondPiece.type === 'q' && firstPiece.type !== 'q')) {
-          return {
-            motifName: secondPiece.type === 'k' ? 'Absolute Pin on King' : 'Relative Pin on Queen',
-            category: 'Pin/Skewer',
-            moveNumber,
-            color: moveColor,
-            moveSan: move.san,
-            fenPosition: postFen,
-            materialChange: 0,
-            rationale: `${move.piece.toUpperCase()} pins ${firstPiece.type.toUpperCase()} against ${secondPiece.type.toUpperCase()} along the line.`,
-            confidence: 'RULE_BASED'
-          };
+      if (!friendlySlider) continue;
+
+      // 2. Look forward from vacated square for opponent target
+      let fr = vacatedR + dr;
+      let fc = vacatedC + dc;
+      let oppTarget: { square: Square; type: PieceSymbol } | null = null;
+
+      while (fr >= 0 && fr < 8 && fc >= 0 && fc < 8) {
+        const p = postBoard[fr]?.[fc];
+        if (p) {
+          if (p.color === oppColor) {
+            oppTarget = p;
+          }
+          break;
         }
-        // Skewer: Higher value piece in front of lower value piece
-        if (PIECE_VALUES[firstPiece.type] > PIECE_VALUES[secondPiece.type] && ['k', 'q', 'r'].includes(firstPiece.type)) {
+        fr += dr;
+        fc += dc;
+      }
+
+      if (!oppTarget) continue;
+
+      // Ensure the moving piece itself did not merely land on the ray
+      if (move.to === oppTarget.square) continue;
+
+      // Check target significance: Queen, Rook, or Minor Piece
+      if (PIECE_VALUES[oppTarget.type] >= 3 && oppTarget.type !== 'k') {
+        // Verify this attack was blocked before the move
+        const wasAttackingBefore = this.getAttackers(preBoard, oppTarget.square, sideColor)
+          .some(a => a.square === friendlySlider?.square);
+
+        if (!wasAttackingBefore) {
           return {
-            motifName: 'Skewer Attack',
-            category: 'Pin/Skewer',
+            motifName: 'Discovered Attack',
+            category: 'Attack',
             moveNumber,
             color: moveColor,
             moveSan: move.san,
             fenPosition: postFen,
             materialChange: 0,
-            rationale: `${move.piece.toUpperCase()} skewers ${firstPiece.type.toUpperCase()} forcing it to yield ${secondPiece.type.toUpperCase()}.`,
-            confidence: 'RULE_BASED'
+            rationale: `Moving ${move.piece.toUpperCase()} from ${move.from} unmasked Discovered Attack from ${friendlySlider.type.toUpperCase()} on ${friendlySlider.square} against opponent ${oppTarget.type.toUpperCase()} on ${oppTarget.square}.`,
+            confidence: 'EXACT',
+            evidenceLevel: 'VERIFIED'
           };
         }
       }
@@ -526,5 +697,573 @@ export class TacticalFingerprintEngine {
 
     return null;
   }
-}
 
+  /**
+   * Pins & Skewers Detection along legal board rays
+   */
+  private static detectPinsAndSkewers(
+    game: Chess,
+    move: Move,
+    moveNumber: number,
+    moveColor: 'white' | 'black',
+    postFen: string
+  ): DetectedMotif[] {
+    const motifs: DetectedMotif[] = [];
+    const board = game.board();
+    const sideColor: Color = move.color;
+    const oppColor: Color = sideColor === 'w' ? 'b' : 'w';
+
+    // Only sliding pieces can pin or skewer
+    if (!['b', 'r', 'q'].includes(move.piece)) return motifs;
+
+    const [tr, tc] = this.squareToCoords(move.to);
+    const deltas: number[][] = [];
+    if (['b', 'q'].includes(move.piece)) {
+      deltas.push([-1, -1], [-1, 1], [1, -1], [1, 1]);
+    }
+    if (['r', 'q'].includes(move.piece)) {
+      deltas.push([-1, 0], [1, 0], [0, -1], [0, 1]);
+    }
+
+    for (const [dr, dc] of deltas) {
+      let r = tr + dr;
+      let c = tc + dc;
+      let p1: { square: Square; type: PieceSymbol; color: Color } | null = null;
+      let p2: { square: Square; type: PieceSymbol; color: Color } | null = null;
+
+      while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+        const piece = board[r]?.[c];
+        if (piece) {
+          if (!p1) {
+            p1 = piece;
+          } else if (!p2) {
+            p2 = piece;
+            break;
+          }
+        }
+        r += dr;
+        c += dc;
+      }
+
+      if (p1 && p2 && p1.color === oppColor && p2.color === oppColor) {
+        // 1. ABSOLUTE PIN ON KING: Second piece is opponent King
+        if (p2.type === 'k') {
+          motifs.push({
+            motifName: 'Absolute Pin on King',
+            category: 'Pin/Skewer',
+            moveNumber,
+            color: moveColor,
+            moveSan: move.san,
+            fenPosition: postFen,
+            materialChange: 0,
+            rationale: `${move.piece.toUpperCase()} on ${move.to} absolutely pins ${p1.type.toUpperCase()} on ${p1.square} to the King on ${p2.square}.`,
+            confidence: 'EXACT',
+            evidenceLevel: 'VERIFIED'
+          });
+        }
+        // 2. RELATIVE PIN ON QUEEN: Second piece is Queen, first piece is of lesser value
+        else if (p2.type === 'q' && PIECE_VALUES[p1.type] < 9) {
+          motifs.push({
+            motifName: 'Relative Pin on Queen',
+            category: 'Pin/Skewer',
+            moveNumber,
+            color: moveColor,
+            moveSan: move.san,
+            fenPosition: postFen,
+            materialChange: 0,
+            rationale: `${move.piece.toUpperCase()} on ${move.to} relatively pins ${p1.type.toUpperCase()} on ${p1.square} against Queen on ${p2.square}.`,
+            confidence: 'RULE_BASED',
+            evidenceLevel: 'CANDIDATE'
+          });
+        }
+        // 3. SKEWER ATTACK: First piece is higher value than second piece (King = highest priority)
+        const p1Val = p1.type === 'k' ? 999 : PIECE_VALUES[p1.type];
+        const p2Val = p2.type === 'k' ? 999 : PIECE_VALUES[p2.type];
+        if (p1Val > p2Val && ['k', 'q', 'r'].includes(p1.type)) {
+          motifs.push({
+            motifName: 'Skewer Attack',
+            category: 'Pin/Skewer',
+            moveNumber,
+            color: moveColor,
+            moveSan: move.san,
+            fenPosition: postFen,
+            materialChange: 0,
+            rationale: `${move.piece.toUpperCase()} on ${move.to} skewers ${p1.type.toUpperCase()} on ${p1.square}, exposing ${p2.type.toUpperCase()} on ${p2.square}.`,
+            confidence: 'RULE_BASED',
+            evidenceLevel: 'CANDIDATE'
+          });
+        }
+      }
+    }
+
+    return motifs;
+  }
+
+  /**
+   * Fork Detection: piece directly attacks 2 or more valuable enemy pieces simultaneously
+   */
+  private static detectForks(
+    game: Chess,
+    move: Move,
+    moveNumber: number,
+    moveColor: 'white' | 'black',
+    postFen: string
+  ): DetectedMotif[] {
+    const motifs: DetectedMotif[] = [];
+    const board = game.board();
+    const sideColor: Color = move.color;
+    const oppColor: Color = sideColor === 'w' ? 'b' : 'w';
+
+    const attackedTargets: Array<{ square: Square; type: PieceSymbol; value: number }> = [];
+
+    // Find all opponent pieces attacked directly by the piece on move.to
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const p = board[r][c];
+        if (p && p.color === oppColor) {
+          const attackers = this.getAttackers(board, p.square, sideColor);
+          if (attackers.some(a => a.square === move.to)) {
+            attackedTargets.push({
+              square: p.square,
+              type: p.type,
+              value: PIECE_VALUES[p.type]
+            });
+          }
+        }
+      }
+    }
+
+    // Filter targets that make a genuine tactical fork
+    let isGenuineFork = false;
+    let forkRationale = '';
+
+    if (move.piece === 'p') {
+      // Pawn fork: attacks 2 pieces of value >= 1 (e.g. 2 minor pieces, or rook + minor)
+      if (attackedTargets.length >= 2 && attackedTargets.filter(t => t.value >= 3).length >= 1) {
+        isGenuineFork = true;
+        forkRationale = `Pawn on ${move.to} forks ${attackedTargets.map(t => t.type.toUpperCase() + ' on ' + t.square).join(' and ')}.`;
+        motifs.push({
+          motifName: 'Pawn Fork',
+          category: 'Fork',
+          moveNumber,
+          color: moveColor,
+          moveSan: move.san,
+          fenPosition: postFen,
+          materialChange: 0,
+          rationale: forkRationale,
+          confidence: 'EXACT',
+          evidenceLevel: 'VERIFIED'
+        });
+      }
+    } else if (move.piece === 'n') {
+      // Knight fork: attacks 2 pieces (one being King/Queen/Rook or undefended piece)
+      if (attackedTargets.length >= 2) {
+        const hasMajorOrKing = attackedTargets.some(t => ['k', 'q', 'r'].includes(t.type));
+        if (hasMajorOrKing) {
+          isGenuineFork = true;
+          forkRationale = `Knight on ${move.to} forks ${attackedTargets.map(t => t.type.toUpperCase() + ' on ' + t.square).join(' and ')}.`;
+          motifs.push({
+            motifName: 'Knight Fork',
+            category: 'Fork',
+            moveNumber,
+            color: moveColor,
+            moveSan: move.san,
+            fenPosition: postFen,
+            materialChange: 0,
+            rationale: forkRationale,
+            confidence: 'EXACT',
+            evidenceLevel: 'VERIFIED'
+          });
+        }
+      }
+    } else {
+      // General piece fork (Bishop, Rook, Queen)
+      if (attackedTargets.length >= 2) {
+        const highValueTargets = attackedTargets.filter(t => t.value > PIECE_VALUES[move.piece] || t.type === 'k');
+        if (highValueTargets.length >= 1 || attackedTargets.length >= 3) {
+          isGenuineFork = true;
+          forkRationale = `${move.piece.toUpperCase()} on ${move.to} forks ${attackedTargets.map(t => t.type.toUpperCase() + ' on ' + t.square).join(' and ')}.`;
+        }
+      }
+    }
+
+    if (isGenuineFork) {
+      motifs.push({
+        motifName: 'Fork Attack',
+        category: 'Fork',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: 0,
+        rationale: forkRationale,
+        confidence: 'RULE_BASED',
+        evidenceLevel: 'VERIFIED'
+      });
+    }
+
+    return motifs;
+  }
+
+  /**
+   * Rigorous Sacrifice Classification & Bounded Tactical Lookahead
+   * Distinguishes MATERIAL_LOSS, CANDIDATE_SACRIFICE, TACTICAL_SACRIFICE, POSITIONAL_SACRIFICE.
+   */
+  private static classifySacrifice(
+    preFen: string,
+    postFen: string,
+    postGame: Chess,
+    move: Move,
+    moveNumber: number,
+    moveColor: 'white' | 'black',
+    prePos: PositionFingerprint,
+    postPos: PositionFingerprint,
+    futureMoves?: Move[]
+  ): DetectedMotif[] {
+    const motifs: DetectedMotif[] = [];
+    const sideColor: Color = move.color;
+    const oppColor: Color = sideColor === 'w' ? 'b' : 'w';
+    const board = postGame.board();
+
+    const movingPieceVal = PIECE_VALUES[move.piece];
+    const capturedVal = move.captured ? PIECE_VALUES[move.captured] : 0;
+    const [toR, toC] = this.squareToCoords(move.to);
+
+    // Opponent attackers on destination square
+    const oppAttackersOnTo = this.getAttackers(board, move.to, oppColor);
+    const friendlyDefendersOnTo = this.getAttackers(board, move.to, sideColor);
+
+    let isSacrificeOffer = false;
+    let netLoss = 0;
+    let sacrificeType: 'QUEEN' | 'EXCHANGE' | 'MINOR' | 'GENERIC' = 'GENERIC';
+
+    // 1. Direct Unequal Trade on Defended Square (e.g. Rook takes Knight on defended square, Queen takes Rook)
+    if (move.captured && movingPieceVal > capturedVal && oppAttackersOnTo.length > 0) {
+      netLoss = movingPieceVal - capturedVal;
+      isSacrificeOffer = true;
+      if (move.piece === 'q') sacrificeType = 'QUEEN';
+      else if (move.piece === 'r' && (move.captured === 'n' || move.captured === 'b')) sacrificeType = 'EXCHANGE';
+      else if ((move.piece === 'b' || move.piece === 'n') && move.captured === 'p') sacrificeType = 'MINOR';
+    }
+    // 2. Moving Piece to Attacked Square where opponent can capture with lesser value or for free
+    else if (!move.captured && oppAttackersOnTo.length > 0) {
+      const minOppAttackerVal = Math.min(...oppAttackersOnTo.map(a => PIECE_VALUES[a.type]));
+      if (minOppAttackerVal < movingPieceVal || oppAttackersOnTo.length > friendlyDefendersOnTo.length) {
+        netLoss = movingPieceVal - (friendlyDefendersOnTo.length > 0 ? minOppAttackerVal : 0);
+        if (netLoss >= 2) {
+          isSacrificeOffer = true;
+          if (move.piece === 'q') sacrificeType = 'QUEEN';
+          else if (move.piece === 'r') sacrificeType = 'EXCHANGE';
+          else if (move.piece === 'b' || move.piece === 'n') sacrificeType = 'MINOR';
+        }
+      }
+    }
+
+    if (!isSacrificeOffer) return motifs;
+
+    // -------------------------------------------------------------------------
+    // Bounded Tactical Lookahead: Test compensation & consequences
+    // -------------------------------------------------------------------------
+    let isTactical = false;
+    let isPositional = false;
+    let isMaterialLoss = false;
+    let rationaleDetail = '';
+
+    // A. Immediate Mate Check
+    if (postGame.isCheckmate()) {
+      isTactical = true;
+      rationaleDetail = 'Delivers immediate terminal checkmate.';
+    }
+
+    // B. Historical game lookahead (if game record available)
+    if (!isTactical && futureMoves && futureMoves.length > 0) {
+      const nextMove = futureMoves[0];
+      const nextNextMove = futureMoves[1];
+      const afterThatMove = futureMoves[2];
+
+      // Did opponent capture the offered piece?
+      const pieceCapturedNext = nextMove && (
+        nextMove.to === move.to || 
+        nextMove.captured === move.piece
+      );
+
+      if (pieceCapturedNext) {
+        // Test if sacrificing side executed mating sequence, gave check, or regained material
+        const replay = new Chess(postFen);
+        try {
+          replay.move(nextMove);
+          if (nextNextMove) {
+            replay.move(nextNextMove);
+            if (replay.isCheckmate()) {
+              isTactical = true;
+              rationaleDetail = `Forced mating continuation: ${nextNextMove.san} leads to checkmate.`;
+            } else if (replay.inCheck()) {
+              // Sacrifice immediately creates a checking attack against the opponent king
+              isTactical = true;
+              rationaleDetail = `Tactical attack: ${nextNextMove.san} delivers check against exposed king.`;
+            } else if (nextNextMove.captured && PIECE_VALUES[nextNextMove.captured] >= netLoss) {
+              isTactical = true;
+              rationaleDetail = `Tactical recovery: ${nextNextMove.san} recovers ${PIECE_VALUES[nextNextMove.captured]} material.`;
+            }
+          }
+          if (!isTactical && afterThatMove) {
+            replay.move(afterThatMove);
+            const postFp = this.analyzePosition(replay);
+            const sideAdvantage = sideColor === 'w' ? postFp.materialBalance.diff : -postFp.materialBalance.diff;
+            if (sideAdvantage >= 0) {
+              isTactical = true;
+              rationaleDetail = `Material fully recovered within 4 plies.`;
+            }
+          }
+        } catch {
+          // ignore parsing error
+        }
+      }
+    }
+
+    // C. Positional compensation criteria
+    if (!isTactical) {
+      const preShield = sideColor === 'w' ? prePos.kingSafety.blackPawnShield : prePos.kingSafety.whitePawnShield;
+      const postShield = sideColor === 'w' ? postPos.kingSafety.blackPawnShield : postPos.kingSafety.whitePawnShield;
+      if (preShield - postShield >= 1) {
+        isPositional = true;
+        rationaleDetail = 'Damaged opponent king pawn shield for attacking lines.';
+      }
+    }
+
+    // D. Only classify as Material Loss if player made an unprovoked blunder without checks or king attack
+    if (!isTactical && !isPositional && futureMoves && futureMoves.length > 0) {
+      const nextMove = futureMoves[0];
+      if (nextMove && (nextMove.to === move.to || nextMove.captured === move.piece)) {
+        isMaterialLoss = true;
+        rationaleDetail = `Material sacrificed (-${netLoss}) without proven tactical recovery.`;
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Emit Strict Specific Classifications
+    // -------------------------------------------------------------------------
+    const isChecking = postGame.inCheck();
+
+    if (isTactical) {
+      motifs.push({
+        motifName: 'Tactical Sacrifice',
+        category: 'Sacrifice',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `${moveColor.toUpperCase()} executed verified Tactical Sacrifice with ${move.san}: ${rationaleDetail}`,
+        confidence: 'EXACT',
+        evidenceLevel: 'VERIFIED'
+      });
+    } else if (isPositional) {
+      motifs.push({
+        motifName: 'Positional Sacrifice',
+        category: 'Sacrifice',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `${moveColor.toUpperCase()} invested material with ${move.san} for strategic compensation: ${rationaleDetail}`,
+        confidence: 'RULE_BASED',
+        evidenceLevel: 'CANDIDATE'
+      });
+    } else if (isMaterialLoss) {
+      motifs.push({
+        motifName: 'Material Loss',
+        category: 'Tactical Error',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `Uncompensated material loss on move ${moveNumber} with ${move.san}: ${rationaleDetail}`,
+        confidence: 'RULE_BASED',
+        evidenceLevel: 'VERIFIED'
+      });
+    } else {
+      motifs.push({
+        motifName: 'Candidate Sacrifice',
+        category: 'Sacrifice',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `${moveColor.toUpperCase()} offered candidate material investment with ${move.san}.`,
+        confidence: 'RULE_BASED',
+        evidenceLevel: 'CANDIDATE'
+      });
+    }
+
+    // Always emit specific piece sacrifice subtype when a Queen/Rook/Minor sacrifice is offered
+    if (sacrificeType === 'QUEEN') {
+      motifs.push({
+        motifName: 'Queen Sacrifice',
+        category: 'Sacrifice',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `${moveColor.toUpperCase()} sacrificed the Queen with ${move.san} (${rationaleDetail || 'decisive attack'}).`,
+        confidence: isTactical ? 'EXACT' : 'RULE_BASED',
+        evidenceLevel: isTactical ? 'VERIFIED' : 'CANDIDATE'
+      });
+    } else if (sacrificeType === 'EXCHANGE') {
+      motifs.push({
+        motifName: 'Exchange Sacrifice',
+        category: 'Sacrifice',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `${moveColor.toUpperCase()} sacrificed the Exchange with ${move.san} (${rationaleDetail || 'positional advantage'}).`,
+        confidence: isTactical ? 'EXACT' : 'RULE_BASED',
+        evidenceLevel: isTactical ? 'VERIFIED' : 'CANDIDATE'
+      });
+    } else if (sacrificeType === 'MINOR') {
+      motifs.push({
+        motifName: 'Minor Piece Sacrifice',
+        category: 'Sacrifice',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `${moveColor.toUpperCase()} sacrificed Minor Piece on ${move.to} with ${move.san} (${rationaleDetail || 'attacking initiative'}).`,
+        confidence: isTactical ? 'EXACT' : 'RULE_BASED',
+        evidenceLevel: isTactical ? 'VERIFIED' : 'CANDIDATE'
+      });
+    }
+
+    if (isChecking && (isTactical || isPositional || !isMaterialLoss)) {
+      motifs.push({
+        motifName: 'Checking Sacrifice',
+        category: 'Sacrifice',
+        moveNumber,
+        color: moveColor,
+        moveSan: move.san,
+        fenPosition: postFen,
+        materialChange: -netLoss,
+        rationale: `${moveColor.toUpperCase()} delivered Checking Sacrifice with ${move.san}.`,
+        confidence: isTactical ? 'EXACT' : 'RULE_BASED',
+        evidenceLevel: isTactical ? 'VERIFIED' : 'CANDIDATE'
+      });
+    }
+
+    return motifs;
+  }
+
+  /**
+   * Diagnostic Mode: Detailed move-by-move inspection and explanation
+   */
+  public static getDiagnostic(
+    fenBefore: string,
+    moveSanOrUci: string,
+    gameId?: number,
+    ply: number = 1
+  ): MoveDiagnostic | null {
+    const game = new Chess(fenBefore);
+    let move: Move | null = null;
+
+    try {
+      move = game.move(moveSanOrUci);
+    } catch {
+      return null;
+    }
+
+    if (!move) return null;
+
+    const fenAfter = game.fen();
+    const sideToMove = move.color === 'w' ? 'white' : 'black';
+    const prePos = this.analyzePosition(new Chess(fenBefore));
+    const postPos = this.analyzePosition(game);
+
+    const isCheck = game.inCheck();
+    const isCheckmate = game.isCheckmate();
+
+    let isDoubleCheck = false;
+    let isDiscoveredCheck = false;
+
+    if (isCheck && !isCheckmate) {
+      const oppColor: Color = move.color === 'w' ? 'b' : 'w';
+      const board = game.board();
+      let oppKingSq: Square = 'e8';
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const p = board[r][c];
+          if (p && p.color === oppColor && p.type === 'k') oppKingSq = p.square;
+        }
+      }
+      const checkers = this.getAttackers(board, oppKingSq, move.color);
+      if (checkers.length >= 2) isDoubleCheck = true;
+      else if (checkers.length === 1 && checkers[0].square !== move.to) isDiscoveredCheck = true;
+    }
+
+    const moveNumber = Math.floor(ply / 2) + 1;
+    const motifs = this.detectMoveMotifs(
+      game,
+      move,
+      moveNumber,
+      sideToMove,
+      prePos,
+      postPos,
+      fenBefore,
+      fenAfter
+    );
+
+    const matDelta = (sideToMove === 'white' ? postPos.materialBalance.diff : -postPos.materialBalance.diff) -
+                     (sideToMove === 'white' ? prePos.materialBalance.diff : -prePos.materialBalance.diff);
+
+    const evidenceSummary = motifs.map(m => `[${m.evidenceLevel || 'CANDIDATE'}] ${m.motifName}: ${m.rationale}`);
+
+    const primaryEvidence: EvidenceLevel = motifs.some(m => m.evidenceLevel === 'VERIFIED')
+      ? 'VERIFIED'
+      : motifs.some(m => m.evidenceLevel === 'CANDIDATE')
+      ? 'CANDIDATE'
+      : 'GEOMETRIC';
+
+    const attackedTargets: Array<{ square: string; piece: string; value: number }> = [];
+    const board = game.board();
+    const oppColor: Color = move.color === 'w' ? 'b' : 'w';
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const p = board[r][c];
+        if (p && p.color === oppColor) {
+          const atks = this.getAttackers(board, p.square, move.color);
+          if (atks.some(a => a.square === move.to)) {
+            attackedTargets.push({ square: p.square, piece: p.type.toUpperCase(), value: PIECE_VALUES[p.type] });
+          }
+        }
+      }
+    }
+
+    return {
+      gameId,
+      ply,
+      fenBefore,
+      fenAfter,
+      san: move.san,
+      uci: `${move.from}${move.to}${move.promotion || ''}`,
+      sideToMove,
+      materialBalanceBefore: prePos.materialBalance,
+      materialBalanceAfter: postPos.materialBalance,
+      materialDeltaForSide: matDelta,
+      isCheck,
+      isCheckmate,
+      isDoubleCheck,
+      isDiscoveredCheck,
+      attackedTargets,
+      motifs,
+      evidenceSummary,
+      searchDepth: 4,
+      confidence: primaryEvidence === 'VERIFIED' ? 'EXACT' : 'RULE_BASED',
+      evidenceLevel: primaryEvidence
+    };
+  }
+}

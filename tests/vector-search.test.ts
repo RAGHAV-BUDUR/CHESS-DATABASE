@@ -64,3 +64,4 @@ describe('Vector Engine & Semantic Search Embeddings', () => {
     expect(distRelevant).toBeLessThan(distIrrelevant);
   });
 });
+
