@@ -219,7 +219,194 @@ erDiagram
 
 ---
 
-## 4. Key Novelties & Advanced Features
+## 3.1 Chen / Classical Entity-Relationship (ER) Diagram (Entities, Attributes & Diamond Relationships)
+
+The diagram below represents the conceptual database design following Chen's notation conventions (Rectangular Entities, Diamond Relationships with Cardinalities like 1:N / M:N, and Oval/Rounded Attributes including Primary Keys with underlines and Foreign Keys):
+
+```mermaid
+flowchart TD
+    %% Styling Classes
+    classDef entity fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef rel fill:#0f172a,stroke:#f59e0b,stroke-width:2px,color:#fbbf24;
+    classDef attr fill:#0f172a,stroke:#94a3b8,stroke-dasharray: 2 2,color:#cbd5e1;
+    classDef pk fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#38bdf8;
+    classDef fk fill:#0f172a,stroke:#a855f7,stroke-width:1px,color:#c084fc;
+
+    %% Entities
+    E_USERS["USERS"]:::entity
+    E_PLAYERS["PLAYERS"]:::entity
+    E_TOURNAMENTS["TOURNAMENTS"]:::entity
+    E_OPENINGS["OPENINGS"]:::entity
+    E_GAMES["GAMES"]:::entity
+    E_MOVES["MOVES"]:::entity
+    E_TACTICAL_MOTIFS["TACTICAL_MOTIFS"]:::entity
+    E_GAME_MOTIFS["GAME_MOTIFS"]:::entity
+    E_GAME_EMBEDDINGS["GAME_EMBEDDINGS"]:::entity
+    E_USER_FAVOURITES["USER_FAVOURITES"]:::entity
+    E_RATING_HISTORY["RATING_HISTORY"]:::entity
+    E_PGN_IMPORT_JOBS["PGN_IMPORT_JOBS"]:::entity
+
+    %% Attributes - USERS
+    U_id(["<u>user_id (PK)</u>"]):::pk
+    U_name(["username"]):::attr
+    U_email(["email"]):::attr
+    U_role(["role"]):::attr
+    E_USERS --- U_id
+    E_USERS --- U_name
+    E_USERS --- U_email
+    E_USERS --- U_role
+
+    %% Attributes - PLAYERS
+    P_id(["<u>player_id (PK)</u>"]):::pk
+    P_name(["name"]):::attr
+    P_fide(["fide_rating"]):::attr
+    P_country(["country"]):::attr
+    P_stats(["stats (wins/losses/draws)"]):::attr
+    E_PLAYERS --- P_id
+    E_PLAYERS --- P_name
+    E_PLAYERS --- P_fide
+    E_PLAYERS --- P_country
+    E_PLAYERS --- P_stats
+
+    %% Attributes - TOURNAMENTS
+    T_id(["<u>tournament_id (PK)</u>"]):::pk
+    T_name(["name"]):::attr
+    T_loc(["location"]):::attr
+    T_dates(["start_date / end_date"]):::attr
+    E_TOURNAMENTS --- T_id
+    E_TOURNAMENTS --- T_name
+    E_TOURNAMENTS --- T_loc
+    E_TOURNAMENTS --- T_dates
+
+    %% Attributes - OPENINGS
+    O_id(["<u>opening_id (PK)</u>"]):::pk
+    O_eco(["eco_code"]):::attr
+    O_name(["opening_name"]):::attr
+    O_moves(["pgn_moves"]):::attr
+    E_OPENINGS --- O_id
+    E_OPENINGS --- O_eco
+    E_OPENINGS --- O_name
+    E_OPENINGS --- O_moves
+
+    %% Attributes - GAMES
+    G_id(["<u>game_id (PK)</u>"]):::pk
+    G_res(["result"]):::attr
+    G_pgn(["pgn"]):::attr
+    G_cnt(["move_count"]):::attr
+    G_wfk(["white_player_id (FK)"]):::fk
+    G_bfk(["black_player_id (FK)"]):::fk
+    G_ofk(["opening_id (FK)"]):::fk
+    G_tfk(["tournament_id (FK)"]):::fk
+    E_GAMES --- G_id
+    E_GAMES --- G_res
+    E_GAMES --- G_pgn
+    E_GAMES --- G_cnt
+    E_GAMES --- G_wfk
+    E_GAMES --- G_bfk
+    E_GAMES --- G_ofk
+    E_GAMES --- G_tfk
+
+    %% Attributes - MOVES
+    M_id(["<u>move_id (PK)</u>"]):::pk
+    M_num(["move_number"]):::attr
+    M_col(["color"]):::attr
+    M_san(["san"]):::attr
+    M_fen(["fen_after"]):::attr
+    M_eval(["evaluation"]):::attr
+    E_MOVES --- M_id
+    E_MOVES --- M_num
+    E_MOVES --- M_col
+    E_MOVES --- M_san
+    E_MOVES --- M_fen
+    E_MOVES --- M_eval
+
+    %% Attributes - TACTICAL_MOTIFS
+    TM_id(["<u>motif_id (PK)</u>"]):::pk
+    TM_name(["motif_name"]):::attr
+    TM_cat(["category"]):::attr
+    TM_sev(["severity_weight"]):::attr
+    E_TACTICAL_MOTIFS --- TM_id
+    E_TACTICAL_MOTIFS --- TM_name
+    E_TACTICAL_MOTIFS --- TM_cat
+    E_TACTICAL_MOTIFS --- TM_sev
+
+    %% Attributes - GAME_MOTIFS
+    GM_id(["<u>id (PK)</u>"]):::pk
+    GM_fen(["fen_position"]):::attr
+    GM_san(["move_san"]):::attr
+    GM_rat(["rationale"]):::attr
+    GM_conf(["confidence"]):::attr
+    E_GAME_MOTIFS --- GM_id
+    E_GAME_MOTIFS --- GM_fen
+    E_GAME_MOTIFS --- GM_san
+    E_GAME_MOTIFS --- GM_rat
+    E_GAME_MOTIFS --- GM_conf
+
+    %% Attributes - GAME_EMBEDDINGS
+    GE_id(["<u>embedding_id (PK)</u>"]):::pk
+    GE_dim(["dimensions (384)"]):::attr
+    GE_vec(["embedding (vector)"]):::attr
+    GE_mod(["model_name"]):::attr
+    E_GAME_EMBEDDINGS --- GE_id
+    E_GAME_EMBEDDINGS --- GE_dim
+    E_GAME_EMBEDDINGS --- GE_vec
+    E_GAME_EMBEDDINGS --- GE_mod
+
+    %% Relationships (Diamonds) with Cardinalities
+    R_WHITE{"plays_white"}:::rel
+    R_BLACK{"plays_black"}:::rel
+    R_HOSTS{"hosts"}:::rel
+    R_CATEGORIZES{"categorizes"}:::rel
+    R_CONTAINS{"contains"}:::rel
+    R_FEATURES{"features"}:::rel
+    R_CLASSIFIES{"classifies"}:::rel
+    R_HAS_EMBED{"has_embedding"}:::rel
+    R_FAV_GAME{"bookmarks_game"}:::rel
+    R_FAV_PLAYER{"bookmarks_player"}:::rel
+    R_TRACKS{"tracks_rating"}:::rel
+    R_LOGS{"imported_via"}:::rel
+
+    %% Connections with Cardinality Notations
+    E_PLAYERS ---|1| R_WHITE
+    R_WHITE ---|N| E_GAMES
+
+    E_PLAYERS ---|1| R_BLACK
+    R_BLACK ---|N| E_GAMES
+
+    E_TOURNAMENTS ---|1| R_HOSTS
+    R_HOSTS ---|N| E_GAMES
+
+    E_OPENINGS ---|1| R_CATEGORIZES
+    R_CATEGORIZES ---|N| E_GAMES
+
+    E_GAMES ---|1| R_CONTAINS
+    R_CONTAINS ---|N| E_MOVES
+
+    E_GAMES ---|1| R_FEATURES
+    R_FEATURES ---|N| E_GAME_MOTIFS
+
+    E_TACTICAL_MOTIFS ---|1| R_CLASSIFIES
+    R_CLASSIFIES ---|N| E_GAME_MOTIFS
+
+    E_GAMES ---|1| R_HAS_EMBED
+    R_HAS_EMBED ---|1| E_GAME_EMBEDDINGS
+
+    E_USERS ---|1| R_FAV_GAME
+    R_FAV_GAME ---|N| E_USER_FAVOURITES
+    E_USER_FAVOURITES ---|N| E_GAMES
+
+    E_USERS ---|1| R_FAV_PLAYER
+    R_FAV_PLAYER ---|N| E_USER_FAVOURITES
+    E_USER_FAVOURITES ---|N| E_PLAYERS
+
+    E_PLAYERS ---|1| R_TRACKS
+    R_TRACKS ---|N| E_RATING_HISTORY
+
+    E_PGN_IMPORT_JOBS ---|1| R_LOGS
+    R_LOGS ---|N| E_GAMES
+```
+
+---
 
 ### 1. Deterministic Tactical Fingerprint Engine
 Instead of black-box ML or generic heuristic labels, the engine uses **rigorous board-state reconstruction**:
