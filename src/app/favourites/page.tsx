@@ -117,6 +117,11 @@ export default function FavouritesPage() {
                   <div className="text-xs text-slate-400 mt-1">
                     {fav.eco_code} • {fav.opening_name} ({fav.result})
                   </div>
+                  {fav.note && (
+                    <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 mt-2 italic">
+                      "{fav.note}"
+                    </div>
+                  )}
                   <div className="pt-3">
                     <a
                       href={`/games/${fav.game_id}`}
@@ -147,6 +152,11 @@ export default function FavouritesPage() {
                   <div className="text-xs text-slate-400 mt-1">
                     Rating: {fav.fide_rating || 'N/A'} • {fav.country || 'International'}
                   </div>
+                  {fav.note && (
+                    <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 mt-2 italic">
+                      "{fav.note}"
+                    </div>
+                  )}
                   <div className="pt-3">
                     <a
                       href={`/players/${fav.player_id}`}

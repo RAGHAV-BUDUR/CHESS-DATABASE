@@ -13,7 +13,9 @@ import {
   CheckCircle, 
   XCircle, 
   MinusCircle, 
-  ArrowRight
+  ArrowRight,
+  Star,
+  X
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -32,8 +34,77 @@ export default function PlayerDashboardPage({ params }: { params: { id: string }
   const [error, setError] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
 
+  // Bookmark / Favourites State
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [bookmarkNote, setBookmarkNote] = useState('');
+  const [showBookmarkModal, setShowBookmarkModal] = useState(false);
+  const [bookmarkSaving, setBookmarkSaving] = useState(false);
+
+  const checkBookmark = () => {
+    fetch(`/api/favourites?playerId=${playerId}`)
+      .then((res) => {
+        if (res.ok) return res.json();
+        return null;
+      })
+      .then((json) => {
+        if (json?.success) {
+          setIsBookmarked(json.isFavourite);
+          if (json.note) setBookmarkNote(json.note);
+        }
+      })
+      .catch(() => {});
+  };
+
+  const handleSaveBookmark = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setBookmarkSaving(true);
+    try {
+      const res = await fetch('/api/favourites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId: parseInt(playerId, 10), note: bookmarkNote })
+      });
+      if (res.status === 401) {
+        if (confirm('You must be signed in to favourite players. Go to login page?')) {
+          window.location.href = '/login';
+        }
+        return;
+      }
+      const json = await res.json();
+      if (json.success) {
+        setIsBookmarked(true);
+        setShowBookmarkModal(false);
+      } else {
+        alert(json.error || 'Failed to save favourite');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error saving favourite');
+    } finally {
+      setBookmarkSaving(false);
+    }
+  };
+
+  const handleRemoveBookmark = async () => {
+    if (!confirm('Remove this player from your favourites?')) return;
+    try {
+      const res = await fetch(`/api/favourites?playerId=${playerId}`, { method: 'DELETE' });
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+      const json = await res.json();
+      if (json.success) {
+        setIsBookmarked(false);
+        setBookmarkNote('');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   useEffect(() => {
     setIsMounted(true);
+    checkBookmark();
     fetch(`/api/players/${playerId}`)
       .then((res) => {
         if (!res.ok) throw new Error('Player not found');
@@ -112,10 +183,31 @@ export default function PlayerDashboardPage({ params }: { params: { id: string }
             </p>
           </div>
 
-          <div className="flex items-center space-x-4 bg-slate-900 border border-slate-800 px-5 py-3 rounded-2xl shadow-md">
-            <div>
-              <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Official FIDE</div>
-              <div className="text-2xl font-black text-amber-400 font-mono">{stats.fide_rating || 'Unrated'}</div>
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={() => {
+                if (isBookmarked) {
+                  handleRemoveBookmark();
+                } else {
+                  setShowBookmarkModal(true);
+                }
+              }}
+              className={`flex items-center space-x-2 px-4 py-2.5 rounded-2xl text-xs font-semibold transition-all border shadow-md ${
+                isBookmarked
+                  ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
+                  : 'bg-slate-900 hover:bg-slate-800 text-slate-200 border-slate-800'
+              }`}
+              title={isBookmarked ? "Remove from favourites" : "Follow / Bookmark Player"}
+            >
+              <Star className={`w-4 h-4 ${isBookmarked ? 'fill-amber-400 text-amber-400' : ''}`} />
+              <span>{isBookmarked ? 'Favorited Player' : 'Favorite Player'}</span>
+            </button>
+
+            <div className="flex items-center space-x-4 bg-slate-900 border border-slate-800 px-5 py-3 rounded-2xl shadow-md">
+              <div>
+                <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Official FIDE</div>
+                <div className="text-2xl font-black text-amber-400 font-mono">{stats.fide_rating || 'Unrated'}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -296,6 +388,58 @@ export default function PlayerDashboardPage({ params }: { params: { id: string }
           )}
         </div>
       </div>
+
+      {/* Bookmark / Notes Modal */}
+      {showBookmarkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative space-y-4">
+            <button
+              onClick={() => setShowBookmarkModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center space-x-2">
+              <Star className="w-5 h-5 text-amber-400 fill-amber-400" />
+              <h2 className="text-lg font-bold text-white">Save Player to Favourites</h2>
+            </div>
+            <p className="text-xs text-slate-400">
+              Bookmark <span className="text-white font-semibold">{stats.player_name}</span> with personal notes to keep track of their games and career repertoire.
+            </p>
+            <form onSubmit={handleSaveBookmark} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Personal Note (Optional)
+                </label>
+                <textarea
+                  value={bookmarkNote}
+                  onChange={(e) => setBookmarkNote(e.target.value)}
+                  placeholder="e.g. World champion repertoire, favorite Sicilian games..."
+                  rows={3}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBookmarkModal(false)}
+                  className="px-3.5 py-2 rounded-xl text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={bookmarkSaving}
+                  className="px-4 py-2 rounded-xl text-xs bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold transition-colors flex items-center space-x-1.5"
+                >
+                  <Star className="w-3.5 h-3.5 fill-slate-950" />
+                  <span>{bookmarkSaving ? 'Saving...' : 'Follow Player'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

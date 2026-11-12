@@ -24,7 +24,8 @@ import {
   Trash2,
   Edit3,
   AlertCircle,
-  X
+  X,
+  Star
 } from 'lucide-react';
 import { Chess } from 'chess.js';
 
@@ -61,6 +62,74 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
+  // Bookmark / Favourites State
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [bookmarkNote, setBookmarkNote] = useState('');
+  const [showBookmarkModal, setShowBookmarkModal] = useState(false);
+  const [bookmarkSaving, setBookmarkSaving] = useState(false);
+
+  const checkBookmark = () => {
+    fetch(`/api/favourites?gameId=${gameId}`)
+      .then((res) => {
+        if (res.ok) return res.json();
+        return null;
+      })
+      .then((json) => {
+        if (json?.success) {
+          setIsBookmarked(json.isFavourite);
+          if (json.note) setBookmarkNote(json.note);
+        }
+      })
+      .catch(() => {});
+  };
+
+  const handleSaveBookmark = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setBookmarkSaving(true);
+    try {
+      const res = await fetch('/api/favourites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gameId: parseInt(gameId, 10), note: bookmarkNote })
+      });
+      if (res.status === 401) {
+        if (confirm('You must be signed in to bookmark games. Go to login page?')) {
+          router.push('/login');
+        }
+        return;
+      }
+      const json = await res.json();
+      if (json.success) {
+        setIsBookmarked(true);
+        setShowBookmarkModal(false);
+      } else {
+        alert(json.error || 'Failed to save bookmark');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error saving bookmark');
+    } finally {
+      setBookmarkSaving(false);
+    }
+  };
+
+  const handleRemoveBookmark = async () => {
+    if (!confirm('Remove this game from your saved favourites?')) return;
+    try {
+      const res = await fetch(`/api/favourites?gameId=${gameId}`, { method: 'DELETE' });
+      if (res.status === 401) {
+        router.push('/login');
+        return;
+      }
+      const json = await res.json();
+      if (json.success) {
+        setIsBookmarked(false);
+        setBookmarkNote('');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const fetchGame = () => {
     fetch(`/api/games/${gameId}`)
       .then((res) => {
@@ -83,6 +152,7 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
   useEffect(() => {
     setIsMounted(true);
     fetchGame();
+    checkBookmark();
   }, [gameId]);
 
   const handleDeleteGame = async () => {
@@ -294,6 +364,24 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
 
         {/* Action Buttons */}
         <div className="flex items-center space-x-2">
+          <button
+            onClick={() => {
+              if (isBookmarked) {
+                handleRemoveBookmark();
+              } else {
+                setShowBookmarkModal(true);
+              }
+            }}
+            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+              isBookmarked
+                ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-sm'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+            }`}
+            title={isBookmarked ? "Click to remove bookmark" : "Save to Favourites"}
+          >
+            <Star className={`w-3.5 h-3.5 ${isBookmarked ? 'fill-amber-400 text-amber-400' : ''}`} />
+            <span>{isBookmarked ? 'Saved' : 'Bookmark'}</span>
+          </button>
           <button
             onClick={openEdit}
             className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-amber-300 hover:text-amber-200 transition-colors border border-slate-700"
@@ -689,6 +777,58 @@ export default function GameExplorerPage({ params }: { params: { id: string } })
                   className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold transition-colors"
                 >
                   {editSaving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Bookmark / Notes Modal */}
+      {showBookmarkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative space-y-4">
+            <button
+              onClick={() => setShowBookmarkModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center space-x-2">
+              <Star className="w-5 h-5 text-amber-400 fill-amber-400" />
+              <h2 className="text-lg font-bold text-white">Save Game to Favourites</h2>
+            </div>
+            <p className="text-xs text-slate-400">
+              Bookmark <span className="text-white font-semibold">{game.white_player} vs {game.black_player}</span> with an optional study note for future review.
+            </p>
+            <form onSubmit={handleSaveBookmark} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Study Note (Optional)
+                </label>
+                <textarea
+                  value={bookmarkNote}
+                  onChange={(e) => setBookmarkNote(e.target.value)}
+                  placeholder="e.g. Masterclass in queen sacrifices, key endgame ideas..."
+                  rows={3}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBookmarkModal(false)}
+                  className="px-3.5 py-2 rounded-xl text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={bookmarkSaving}
+                  className="px-4 py-2 rounded-xl text-xs bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold transition-colors flex items-center space-x-1.5"
+                >
+                  <Star className="w-3.5 h-3.5 fill-slate-950" />
+                  <span>{bookmarkSaving ? 'Saving...' : 'Save Bookmark'}</span>
                 </button>
               </div>
             </form>
