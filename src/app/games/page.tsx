@@ -14,7 +14,8 @@ import {
   Trash2,
   Edit3,
   Check,
-  AlertCircle
+  AlertCircle,
+  Star
 } from 'lucide-react';
 
 function GamesExplorerContent() {
@@ -47,6 +48,58 @@ function GamesExplorerContent() {
   const [editEco, setEditEco] = useState('');
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+
+  // Bookmark / Favourites State
+  const [bookmarkedIds, setBookmarkedIds] = useState<Set<number>>(new Set());
+
+  const fetchFavourites = async () => {
+    try {
+      const res = await fetch('/api/favourites');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          const ids = new Set<number>(
+            json.data.filter((f: any) => f.game_id).map((f: any) => f.game_id)
+          );
+          setBookmarkedIds(ids);
+        }
+      }
+    } catch {}
+  };
+
+  const handleToggleBookmark = async (gameId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const isSaved = bookmarkedIds.has(gameId);
+    try {
+      if (isSaved) {
+        const res = await fetch(`/api/favourites?gameId=${gameId}`, { method: 'DELETE' });
+        if (res.ok) {
+          setBookmarkedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(gameId);
+            return next;
+          });
+        }
+      } else {
+        const res = await fetch('/api/favourites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gameId })
+        });
+        if (res.status === 401) {
+          if (confirm('Sign in required to bookmark games. Go to login page?')) {
+            router.push('/login');
+          }
+          return;
+        }
+        if (res.ok) {
+          setBookmarkedIds((prev) => new Set(prev).add(gameId));
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   // Synchronize state when URL query parameters change (e.g. from Opening Tree "View Games")
   useEffect(() => {
@@ -92,6 +145,10 @@ function GamesExplorerContent() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchFavourites();
+  }, []);
 
   useEffect(() => {
     fetchGames();
@@ -410,6 +467,17 @@ function GamesExplorerContent() {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="inline-flex items-center space-x-1.5">
+                        <button
+                          onClick={(e) => handleToggleBookmark(g.game_id, e)}
+                          className={`p-1 rounded transition-all ${
+                            bookmarkedIds.has(g.game_id)
+                              ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                              : 'bg-slate-800 text-slate-400 hover:text-amber-400 hover:bg-slate-700'
+                          }`}
+                          title={bookmarkedIds.has(g.game_id) ? "Remove from bookmarks" : "Bookmark Game"}
+                        >
+                          <Star className={`w-3.5 h-3.5 ${bookmarkedIds.has(g.game_id) ? 'fill-amber-400' : ''}`} />
+                        </button>
                         <a
                           href={`/games/${g.game_id}`}
                           className="px-2.5 py-1 rounded bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-200 font-semibold transition-all text-xs"

@@ -195,8 +195,8 @@ export class PGNParser {
 
     // Opening & ECO deterministic classification
     const openingClassification = ECOClassifier.classify(pgnText, history.map(m => m.san));
-    const ecoCode = openingClassification.ecoCode;
-    const openingName = openingClassification.openingName;
+    const ecoCode = headers['ECO'] ? headers['ECO'].trim() : openingClassification.ecoCode;
+    const openingName = headers['Opening'] ? headers['Opening'].trim() : openingClassification.openingName;
 
     const moveCount = Math.ceil(history.length / 2);
 
